@@ -225,6 +225,19 @@ before. The session cache's unbounded growth is pre-existing and out of scope
 here; capping it (the `MAX_RUNNING_SUBAGENTS` eviction is a usable template)
 is the fix, not capping this map.
 
+`IndexState.subagentIndex` (`SubagentIndexState.agents`, a
+`Map<agentId, AgentFileState>`) is the same shape of problem for the same
+reason: each `AgentFileState` carries its own `messageDedup` map, deduping
+that one subagent's assistant messages by `message.id` exactly like
+`assistantMessageDedup` does for the main transcript, and nothing ever
+removes an entry for an agent that has finished. It's unbounded for the same
+process-lifetime reason and gets the same non-fix here. In practice it's
+much smaller than `assistantMessageDedup` — a session dispatches dozens of
+subagents at most, not the thousands of messages a single long transcript
+can carry — so it's a real instance of the same gap rather than an equally
+pressing one; it belongs in the same eviction fix as the cache itself, not a
+separate one.
+
 `SummedUsage` intentionally has **no `contextTokens` field**, unlike
 `TokenUsage`. `contextTokens` is `input + cacheRead + cacheCreation` *of one
 message* — the size of that message's context window — and summing that
