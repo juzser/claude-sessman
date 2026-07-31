@@ -3,7 +3,7 @@ import type { Component, HTMLAttributes } from "vue"
 import { Inbox } from "@lucide/vue"
 import { cn } from "@/lib/utils"
 
-// Simplified from the upstream hans-dashboard EmptyState: this repo drops
+// Simplified from the upstream design system's EmptyState: this repo drops
 // the `illustration`/`illustrationSize` props (no illustration set exists
 // here) and keeps only the icon register. See docs/DESIGN.md "Known
 // deviations".

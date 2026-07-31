@@ -47,11 +47,13 @@ const forwarded = useForwardPropsEmits(delegatedProps, emits)
       data-slot="switch-thumb"
       :class="
         cn(
-          'pointer-events-none block rounded-full bg-background shadow-lg ring-0 transition-transform data-[state=unchecked]:translate-x-0',
+          'pointer-events-none flex items-center justify-center rounded-full bg-background shadow-lg ring-0 transition-transform data-[state=unchecked]:translate-x-0',
           'group-data-[size=default]/switch:size-4 group-data-[size=default]/switch:data-[state=checked]:translate-x-4',
           'group-data-[size=sm]/switch:size-3.5 group-data-[size=sm]/switch:data-[state=checked]:translate-x-3',
         )
       "
-    />
+    >
+      <slot name="thumb" />
+    </SwitchThumb>
   </SwitchRoot>
 </template>
