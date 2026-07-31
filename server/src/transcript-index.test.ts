@@ -15,16 +15,35 @@ function userPromptLine(text: string, timestamp: string, overrides: Record<strin
   });
 }
 
-function toolResultLine(timestamp: string): string {
+function toolResultLine(timestamp: string, toolUseId = "toolu_synthetic_1"): string {
   return JSON.stringify({
     type: "user",
     timestamp,
     isSidechain: false,
     message: {
       role: "user",
-      content: [{ type: "tool_result", tool_use_id: "toolu_synthetic_1", content: "synthetic tool output" }],
+      content: [{ type: "tool_result", tool_use_id: toolUseId, content: "synthetic tool output" }],
     },
     toolUseResult: { synthetic: true },
+  });
+}
+
+/** Builds an assistant line with a single Agent/Task tool_use dispatch block, carrying an `id` for later tool_result matching. */
+function assistantAgentDispatchLine(
+  toolUseId: string,
+  timestamp: string,
+  input: Record<string, unknown> = {},
+  toolName = "Task",
+): string {
+  return JSON.stringify({
+    type: "assistant",
+    timestamp,
+    isSidechain: false,
+    message: {
+      role: "assistant",
+      model: "synthetic-model-1",
+      content: [{ type: "tool_use", id: toolUseId, name: toolName, input }],
+    },
   });
 }
 
