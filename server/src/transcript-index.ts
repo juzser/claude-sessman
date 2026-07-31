@@ -183,6 +183,20 @@ interface MutableTurn {
   continuation: boolean;
 }
 
+/**
+ * Per-`message.id` dedup state for {@link applyAggregateAssistantEntry}. Real
+ * transcripts write one logical assistant message as multiple JSONL lines
+ * (one per content block: thinking/text/tool_use), each carrying an
+ * identical copy of `message.usage` — without this, summing per-line
+ * inflates totals ~2x. See docs/DATA-CONTRACT.md.
+ */
+interface AssistantMessageDedup {
+  /** Whether modelBreakdown[].calls has already counted this message.id (counts messages, not lines). */
+  callCounted: boolean;
+  /** Whether a non-zero usage has already been folded for this message.id — a later all-zero line then contributes nothing further. */
+  usageFinalized: boolean;
+}
+
 interface IndexState {
   size: number;
   mtimeMs: number;
@@ -208,6 +222,8 @@ interface IndexState {
   lastSidechainAt: string | null;
   /** Unresolved Agent/Task dispatches, keyed by their tool_use id, insertion-ordered (Map preserves it). */
   pendingSubagents: Map<string, RunningSubagent>;
+  /** Dedup state keyed by assistant `message.id`, so a multi-line message is folded into the aggregates once, not once per line. Grows unboundedly for the life of the process (no eviction) — acceptable, see docs/DATA-CONTRACT.md. */
+  assistantMessageDedup: Map<string, AssistantMessageDedup>;
 }
 
 interface CacheEntry {
@@ -241,6 +257,7 @@ function emptyState(): IndexState {
     sidechainLineCount: 0,
     lastSidechainAt: null,
     pendingSubagents: new Map(),
+    assistantMessageDedup: new Map(),
   };
 }
 
@@ -312,6 +329,42 @@ function addUsage(target: SummedUsage, usage: TokenUsage): void {
   target.cacheCreationTokens += usage.cacheCreationTokens;
 }
 
+/** True when every one of a TokenUsage's four fields is 0 (as opposed to a real, non-zero snapshot). */
+function isZeroUsage(usage: TokenUsage): boolean {
+  return (
+    usage.inputTokens === 0 &&
+    usage.outputTokens === 0 &&
+    usage.cacheReadTokens === 0 &&
+    usage.cacheCreationTokens === 0
+  );
+}
+
+/** Adds `usage` into totalUsage (and subagentUsage, if sidechain) — the shared tail of folding one message's usage exactly once. */
+function foldUsageTotals(state: IndexState, usage: TokenUsage, isSidechain: boolean): void {
+  if (!state.totalUsage) state.totalUsage = emptySummedUsage();
+  addUsage(state.totalUsage, usage);
+  if (isSidechain) {
+    if (!state.subagentUsage) state.subagentUsage = emptySummedUsage();
+    addUsage(state.subagentUsage, usage);
+  }
+}
+
+/** Adds one message's usage (if any) into `model`'s modelBreakdown entry, optionally counting it as a call. */
+function foldModelUsage(state: IndexState, model: string, usage: TokenUsage | null, countCall: boolean): void {
+  let entry = state.modelUsage.get(model);
+  if (!entry) {
+    entry = { model, calls: 0, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0 };
+    state.modelUsage.set(model, entry);
+  }
+  if (countCall) entry.calls += 1;
+  if (usage) {
+    entry.inputTokens += usage.inputTokens;
+    entry.outputTokens += usage.outputTokens;
+    entry.cacheReadTokens += usage.cacheReadTokens;
+    entry.cacheCreationTokens += usage.cacheCreationTokens;
+  }
+}
+
 /**
  * Folds one assistant message's model+usage into the running totals —
  * totalUsage, subagentUsage (sidechain-only) and modelBreakdown. Runs for
@@ -319,33 +372,61 @@ function addUsage(target: SummedUsage, usage: TokenUsage): void {
  * fields sidechain lines are allowed to affect (see applyEntry). Never
  * throws; a message missing usage or model contributes to whichever of the
  * two it does have.
+ *
+ * A real transcript writes one logical assistant message as multiple JSONL
+ * lines (one per content block — thinking/text/tool_use), each line carrying
+ * an IDENTICAL copy of `message.usage` (a running total, not a delta). Naively
+ * folding every line inflates totalUsage/subagentUsage/modelBreakdown by
+ * however many lines the message was split across (~2x observed on real
+ * transcripts). So this dedups by `message.id`, folding each distinct id's
+ * usage+call at most once:
+ *  - First line seen for an id: count the call (if it names a model) and fold
+ *    whatever usage it carries, even if zero/absent.
+ *  - A later line for the SAME id is skipped once a non-zero usage has been
+ *    folded for it — including after an intervening tool_result line;
+ *    contiguity is irrelevant, only the id matters.
+ *  - Exception: if the first line(s) for an id carried only an all-zero (or
+ *    missing) usage, a later line with a real, non-zero usage for that same
+ *    id still gets folded (the call was already counted, so it doesn't
+ *    double-count `calls` — only the usage totals pick up the real value).
+ *  - `message.id` missing or non-string: falls back to the pre-dedup,
+ *    per-line behaviour (rare).
  */
 function applyAggregateAssistantEntry(state: IndexState, message: Record<string, unknown>, isSidechain: boolean): void {
   const usage = readUsage(message.usage);
   const model = typeof message.model === "string" ? message.model : null;
+  const messageId = typeof message.id === "string" ? message.id : null;
 
-  if (usage) {
-    if (!state.totalUsage) state.totalUsage = emptySummedUsage();
-    addUsage(state.totalUsage, usage);
-    if (isSidechain) {
-      if (!state.subagentUsage) state.subagentUsage = emptySummedUsage();
-      addUsage(state.subagentUsage, usage);
-    }
+  if (messageId === null) {
+    if (usage) foldUsageTotals(state, usage, isSidechain);
+    if (model) foldModelUsage(state, model, usage, true);
+    return;
   }
 
-  if (model) {
-    let entry = state.modelUsage.get(model);
-    if (!entry) {
-      entry = { model, calls: 0, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0 };
-      state.modelUsage.set(model, entry);
-    }
-    entry.calls += 1;
-    if (usage) {
-      entry.inputTokens += usage.inputTokens;
-      entry.outputTokens += usage.outputTokens;
-      entry.cacheReadTokens += usage.cacheReadTokens;
-      entry.cacheCreationTokens += usage.cacheCreationTokens;
-    }
+  let dedup = state.assistantMessageDedup.get(messageId);
+  if (!dedup) {
+    dedup = { callCounted: false, usageFinalized: false };
+    state.assistantMessageDedup.set(messageId, dedup);
+  }
+
+  // Count the call at most once per message id — whichever content-block
+  // line for this id is the first to name a model — no matter how many lines
+  // (thinking/text/tool_use) the logical message was split across.
+  const isFirstCallForId = model !== null && !dedup.callCounted;
+  if (isFirstCallForId) dedup.callCounted = true;
+
+  // Every line for the same logical message repeats an identical usage
+  // snapshot (never a delta), so fold it at most once per id — except a
+  // later non-zero usage still wins over an earlier all-zero/missing one
+  // seen for the same id (rare, but seen in the wild).
+  const shouldFoldUsage = usage !== null && !dedup.usageFinalized;
+  if (shouldFoldUsage) {
+    foldUsageTotals(state, usage, isSidechain);
+    if (!isZeroUsage(usage)) dedup.usageFinalized = true;
+  }
+
+  if (model && (shouldFoldUsage || isFirstCallForId)) {
+    foldModelUsage(state, model, shouldFoldUsage ? usage : null, isFirstCallForId);
   }
 }
 
