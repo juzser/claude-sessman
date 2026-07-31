@@ -121,13 +121,35 @@ snapshot (`SessionCard.vue` renders `.usage` as `ctx`) — they are not totals,
 and this PR does not touch what feeds them.
 
 **`totalUsage: SummedUsage | null`** / **`subagentUsage: SummedUsage | null`** —
-real sums (not snapshots) of every assistant message's usage seen so far.
-`totalUsage` sums main-chain **and** sidechain assistant lines; `subagentUsage`
-sums sidechain-only. Main-chain-only usage is `totalUsage` minus `subagentUsage`
-field-by-field (there is no separate third field for it). Both are `null`
-until at least one qualifying assistant usage has been seen — this
-distinguishes "zero tokens seen" from "no usage-bearing message parsed yet"
-the same way `TranscriptSummary.usage` already does.
+real sums (not snapshots), folded **once per distinct assistant `message.id`**,
+not once per JSONL line. A real transcript writes one logical assistant
+message as multiple JSONL lines — one per content block (`thinking`, then
+`text`, then `tool_use`) — and every line belonging to that message repeats
+an identical `message.usage` object: it is a running total *for the whole
+message*, never a per-line delta. Folding it once per line therefore
+inflated `totalUsage`/`subagentUsage`/`modelBreakdown` by however many lines
+the message happened to be split across. The scanner instead folds each
+distinct `message.id`'s usage at most once — except that an earlier all-zero
+(or missing) usage does not "close" the id, so a later line for the same id
+carrying a real, non-zero usage still gets folded in. When `message.id` is
+missing or not a string (rare), the line falls back to the pre-dedup,
+per-line behaviour. `totalUsage` sums main-chain **and** sidechain assistant
+messages; `subagentUsage` sums sidechain-only. Main-chain-only usage is
+`totalUsage` minus `subagentUsage` field-by-field (there is no separate third
+field for it). Both are `null` until at least one qualifying assistant usage
+has been seen — this distinguishes "zero tokens seen" from "no usage-bearing
+message parsed yet" the same way `TranscriptSummary.usage` already does.
+
+Note: `message.usage.iterations` is present on nearly every assistant line,
+but it is always length 1 and identical to that message's top-level usage
+fields — it is **not** a per-call/per-line breakdown, and must not be used to
+attribute usage within a multi-line message.
+
+This dedup state (`message.id` → whether its call/usage has been counted) is
+kept in memory for the life of the indexed file and never evicted — on the
+order of a thousand distinct assistant message ids for a large real
+transcript, each a small fixed-size entry, so the memory cost is acceptable
+for a process-lifetime cache.
 
 `SummedUsage` intentionally has **no `contextTokens` field**, unlike
 `TokenUsage`. `contextTokens` is `input + cacheRead + cacheCreation` *of one
@@ -142,11 +164,14 @@ plausible but mean nothing.
 string seen (main chain **and** sidechain), each `{ model, calls, inputTokens,
 outputTokens, cacheReadTokens, cacheCreationTokens }`. Sorted by `calls`
 descending, then `model` ascending as a tiebreak, for a stable render order.
-Summing every entry's four token fields across the whole array always equals
-`totalUsage` — an assistant line with usage but no string `model` contributes
-to `totalUsage` but has no `modelBreakdown` entry to attribute to; a line with
-a string `model` but no usable `usage` still increments that model's `calls`
-(it happened), contributing `0` to all four token fields.
+`calls` counts distinct assistant **messages**, deduped by `message.id` using
+the same rule as `totalUsage` above — a message split across several lines
+increments `calls` once, not once per line. Summing every entry's four token
+fields across the whole array always equals `totalUsage` — an assistant
+message with usage but no string `model` contributes to `totalUsage` but has
+no `modelBreakdown` entry to attribute to; a message with a string `model`
+but no usable `usage` still increments that model's `calls` (it happened),
+contributing `0` to all four token fields.
 
 **`subagents: SubagentSummary`** — `{ sidechainLineCount, lastSidechainAt,
 running }`:
