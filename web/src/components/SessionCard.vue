@@ -102,7 +102,7 @@ function onOpenClick(event: MouseEvent): void {
 
 <template>
   <article
-    class="flex flex-col gap-3 rounded-xl border border-slate-800 bg-slate-900/60 p-4 shadow-sm transition hover:border-slate-700"
+    class="flex flex-col gap-3 rounded-xl border border-slate-800 bg-slate-900/60 p-4 shadow-xs transition hover:border-slate-700"
     :data-session-id="session.sessionId"
   >
     <button
@@ -131,7 +131,7 @@ function onOpenClick(event: MouseEvent): void {
         />
       </header>
 
-      <p class="line-clamp-1 min-h-[1rem] text-xs text-slate-300" :title="promptLine">
+      <p class="line-clamp-1 min-h-4 text-xs text-slate-300" :title="promptLine">
         {{ promptLine }}
       </p>
 

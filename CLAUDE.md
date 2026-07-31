@@ -89,6 +89,79 @@ Do not weaken any of these without discussing it first:
 - All non-GET routes require the local-origin guard in `app.ts`: an `X-Sessman-Client` header plus an allow-listed (or absent) `Origin` — see `docs/API.md`.
 - "Focus tab" invokes `osascript` via `execFile` with the tty as its own argv element (never string-concatenated into the script); the tty is always server-resolved (never from the request body) and validated against `/^ttys\d+$/` before use.
 
+## UI rules (Hans Design System — variant `dashboard`)
+
+Hard rules — violating any of these is a review blocker, not a style nit.
+Full detail (declarations, primitive inventory, lozenge mapping, reference
+pages, known deviations) lives in `docs/DESIGN.md`; this section is the
+enforcement surface an agent always has in context when touching `web/`.
+This adoption is infrastructure-only so far (tokens + gates land in this
+PR); no existing screen has been restyled yet, so several rules below
+describe the target state, not `web/`'s current contents — `docs/DESIGN.md`'s
+"Known deviations" tracks exactly where the gap is.
+
+1. **Tokens only.** Colors, radii, shadows, control sizes and type roles come
+   from `web/src/styles/hds-tokens.css` utilities (`bg-surface`,
+   `text-fg-subtle`, `border-line`, `rounded-control`, `h-control`,
+   `bg-success-subtle`, `text-body` / `text-caption` / `text-card-title` /
+   `text-section` / `text-page-title` / `text-hero`...). Never raw hex, never
+   Tailwind palette classes (`bg-slate-100`), never arbitrary values
+   (`w-[437px]`, `text-[13px]`), never a raw size class where a type role
+   exists. Never edit token values in this repo — the master copy lives in
+   the design system.
+2. **Closed component set.** Build only from the primitives inventoried in
+   `docs/DESIGN.md` (currently empty — nothing has been vendored yet).
+   Missing something → vendor from shadcn-vue + add to the inventory in the
+   same PR. Never hand-roll a lookalike, never add a UI dependency — icon
+   pack, chart library, date picker, animation library — without the
+   operator's explicit OK.
+3. **Every page instantiates one layout template**, as recorded in
+   `docs/DESIGN.md`. Template 5 (dashboard overview, ± rail) belongs to
+   `variant: dashboard`, defined in `layouts-dashboard.md`. At most one
+   `Highlight` per page, and exactly one `<h1>`. No freeform page
+   structures. When in doubt, copy the reference page, don't improvise.
+4. **Three mandatory states.** Every remote-data surface implements and
+   tests loading (skeleton), error (banner + a wired Retry), and empty
+   states. Empty means the fetch succeeded and returned nothing — falling
+   back to it on failure is a silent degrade, and there is no best-effort
+   tier.
+5. **No dead state.** Every exposed composable state (`error`, `saving`, ...)
+   is rendered somewhere and covered by a test.
+6. **Race-guard mutations.** Disable the firing control while in flight AND
+   early-return guard in the action itself.
+7. **Both themes.** Verify light and dark in a real browser before calling
+   UI work done. No `dark:` overrides against raw colors.
+8. **One density — this repo's variant's.** `p-6` page padding, `gap-6`
+   section gaps, 32px controls (`h-control`), 14px body, auto-height `py-*`
+   card rows in two sanctioned steps, `text-card-title` card titles. Never
+   run two densities in one repo.
+9. **One UI language: English.** No mixed-language surfaces.
+10. **Destructive actions** go through AlertDialog naming the exact object;
+    feedback follows the fixed channel mapping in `docs/DESIGN.md` (inline
+    for validation, banner for failures, toast only for success/background).
+    N/A today — sessman has no destructive action.
+11. **Reference pages win.** `docs/DESIGN.md`'s Reference pages table is
+    normative once populated — when a rule and a reference seem to
+    conflict, flag it; never silently invent a third way.
+12. **Run the design gates before calling UI work done** and report their
+    real output: `npm run design:gate` (hardcode lint + no-emoji, from
+    `scripts/design/`) and `npm run design:contrast -- "#fg" "#bg"` for any
+    new color pairing. There is no adherence-lint script in this repo — see
+    `docs/DESIGN.md`'s "Gates wired" section for why it can't be wired here.
+    Never state a contrast ratio or "WCAG pass" you did not measure this
+    way. Zero emoji in new/changed UI, code, and copy — the pre-existing
+    findings tracked in `docs/DESIGN.md` are a known, separate deviation; do
+    not extend that exception to new code.
+13. **8-state completeness.** Interactive components account for default,
+    hover, focus, active, disabled, loading, error, selected — mark N/A
+    explicitly in the PR when a state doesn't apply.
+14. **Illustrations are rationed.** Not used in this repo today. If ever
+    introduced: only the Open Doodles, two per page maximum, never at the
+    same size, never on a data card or error screen.
+15. **Charts are token-driven.** Not used in this repo today. If ever
+    introduced: inline SVG from `--ds-chart-1..8`, capped at 8 series, never
+    reused for status.
+
 ## Gotchas
 
 - `procStart` (registry, UTC ctime string) vs. `ps -o lstart` (local time, no marker) — compared via `ctime.ts`/`pid-reuse.ts`, which parse each in its own source timezone. A naive string comparison misfires by exactly the local UTC offset. See `docs/DATA-CONTRACT.md`.

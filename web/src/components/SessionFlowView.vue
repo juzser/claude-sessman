@@ -73,7 +73,7 @@ function retry(): void {
 
     <div
       v-else-if="state === 'loaded' && flow"
-      class="relative h-[28rem] w-full overflow-hidden rounded-lg border border-slate-800 bg-slate-900/40"
+      class="relative h-112 w-full overflow-hidden rounded-lg border border-slate-800 bg-slate-900/40"
     >
       <p
         v-if="flow.turnsDropped"
@@ -114,7 +114,7 @@ function retry(): void {
                 <li
                   v-for="(call, i) in data.turn.toolCalls"
                   :key="i"
-                  class="rounded border border-slate-700 px-1.5 py-0.5 text-[11px] text-slate-300"
+                  class="rounded-sm border border-slate-700 px-1.5 py-0.5 text-[11px] text-slate-300"
                 >
                   {{ call.name }}<span v-if="call.target"> — {{ call.target }}</span>
                 </li>
