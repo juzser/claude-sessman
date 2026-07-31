@@ -231,6 +231,10 @@ qualifying usage is seen), `modelBreakdown` is a `calls`-desc/`model`-asc
 sorted array that always sums to `totalUsage`, and `subagents.running` is a
 best-effort list of not-yet-resolved `Task`/`Agent` dispatches (identity
 recovered from the dispatch's own `tool_use` block, not invented).
+`subagents.agents` (M4 follow-up) additionally lists every real subagent
+found under that session's `subagents/` sidecar directory, each joined to
+`running` above by `toolUseId` — see `docs/DATA-CONTRACT.md`'s "Real
+subagent files" section for the full shape and degradation rules.
 
 Each entry in `transcriptDetail.recentTurns`/`FlowSummary`'s turns also now
 carries `continuation: boolean` — `true` for a turn whose prompt is the

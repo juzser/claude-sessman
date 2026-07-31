@@ -3,7 +3,7 @@
 Everything this tool shows comes from files Claude Code itself already
 writes to disk. **sessman never writes to `~/.claude`** — every read path
 in this codebase is read-only toward it (`registry.ts`, `transcript.ts`,
-`transcript-index.ts`, `slug.ts`).
+`transcript-index.ts`, `subagent-index.ts`, `slug.ts`).
 
 ## Registry: `~/.claude/sessions/<pid>.json`
 
@@ -176,6 +176,27 @@ field for it). Both are `null` until at least one qualifying assistant usage
 has been seen — this distinguishes "zero tokens seen" from "no usage-bearing
 message parsed yet" the same way `TranscriptSummary.usage` already does.
 
+**Since the M4 follow-up**, both fields also fold in usage summed from the
+real `subagents/agent-<agentId>.jsonl` sidecar files described below (see
+"Real subagent files" under `subagents: SubagentSummary`) — read `subagentUsage`
+as "sidechain-derived usage plus real-subagent-file-derived usage", not
+sidechain-only. This combine happens fresh on every read
+(`transcript-index.ts`'s `combineUsage`, called from `toSummary`) from two
+sources that are never mutated together — the inline-scan accumulator
+(`IndexState.totalUsage`/`subagentUsage`, populated only by JSONL lines in the
+*main* transcript file) and a sum freshly recomputed each call from
+`IndexState.subagentIndex` (populated only from bytes in the sibling
+`subagents/` files) — so calling `getSummary` twice with no intervening scan,
+or scanning when nothing changed, never re-adds either source. The two
+sources are sums over disjoint bytes on disk, so combining them by addition
+cannot double-count the same event; the one case that could plausibly look
+like an overlap — a subagent whose `toolUseId` is *also* tracked by the
+main-chain running heuristic (see `running` below) — still contributes its
+file-derived usage exactly once, because `RunningSubagent` carries no usage
+figure of its own to add (pinned by a regression test in
+`transcript-index.test.ts`, describe block "real subagent visibility via
+subagents/ directory (M4 follow-up)").
+
 Note: `message.usage.iterations` is present on nearly every assistant line,
 but it is always length 1 and identical to that message's top-level usage
 fields — it is **not** a per-call/per-line breakdown, and must not be used to
@@ -230,7 +251,7 @@ increments that model's `calls` (it happened), contributing `0` to all four
 token fields.
 
 **`subagents: SubagentSummary`** — `{ sidechainLineCount, lastSidechainAt,
-running }`:
+running, agents }`:
 
 - `sidechainLineCount` / `lastSidechainAt`: count and latest timestamp of
   every `isSidechain: true` line of **any** `type` seen in this transcript.
@@ -265,15 +286,62 @@ running }`:
      task, not assumed), it lives in separate
      `<projectSlug>/<sessionId>/subagents/agent-<agentId>.jsonl` files
      (paired with `agent-<agentId>.meta.json` carrying `agentType`,
-     `description`, `spawnDepth`, `toolUseId`), which this single-file
-     scanner does not read. In practice this means `sidechainLineCount` is
-     frequently `0` even on a transcript with real subagent activity, and
-     `running` (derived from the main-chain dispatch/result pairing instead)
-     is the only signal in this file that reliably reflects real subagent
-     activity today. Reading the external `subagents/` directory to recover
-     the sidechain-content-based signal for real, and/or to attribute
-     `subagentUsage`/`modelBreakdown` entries to actual per-subagent token
-     spend, is out of scope for this change and is a natural follow-up task.
+     `description`, `spawnDepth`, `toolUseId`) — **read since the M4
+     follow-up**, see "Real subagent files" immediately below. In practice
+     this still means `sidechainLineCount` stays `0` on any transcript
+     produced by these CLI builds even though real subagent activity
+     happened — that specific anonymous counter is not backfilled from the
+     sidecar files, only `agents`/`subagentUsage`/`totalUsage` are.
+
+### Real subagent files: `subagents/agent-<agentId>.jsonl` + `.meta.json`
+
+Read by `server/src/subagent-index.ts`, a self-contained module with no
+import in either direction to/from `transcript-index.ts` (they share only
+the `streamAppend` byte-offset scanner from `jsonl-stream.ts`). For a
+transcript at `<dir>/<sessionId>.jsonl`, the sibling directory is
+`<dir>/<sessionId>/subagents/`; every `agent-<agentId>.jsonl` found there
+(matched by filename, not by directory listing order) is scanned
+incrementally the same way the main transcript is — byte-offset resumption,
+one JSON-parsed line at a time, usage folded once per distinct
+`message.assistant` `id` (the identical multi-line-message dedup rule
+documented above, applied independently per agent file).
+
+Each `agent-<agentId>.jsonl` is paired with an `agent-<agentId>.meta.json`
+carrying exactly four keys:
+
+| Key | Type | Notes |
+|---|---|---|
+| `agentType` | `string` | the dispatched subagent's type/persona |
+| `description` | `string` | the one-line task description passed to the dispatch |
+| `spawnDepth` | `number` | how many levels of subagent nesting deep this dispatch is |
+| `toolUseId` | `string` | the **join key** — matches the `id` of the `tool_use` block in the *main chain* that dispatched this subagent (the same id `RunningSubagent.toolUseId`/`subagents.running[].toolUseId` tracks) |
+
+`subagents.agents: SubagentAgentSummary[]` is one entry per discovered
+`agent-<agentId>.jsonl`, sorted by `agentId`:
+`{ agentId, agentType, description, spawnDepth, toolUseId, usage, running }`.
+`agentType`/`description`/`spawnDepth`/`toolUseId` are `null` when the
+`.meta.json` is missing, unreadable, malformed JSON, not an object, or has
+the wrong type for that key — the `.jsonl` file is still scanned and
+reported regardless (a subagent is never dropped just because its meta
+sidecar is broken or hasn't been written yet). `usage` is `null` until at
+least one qualifying assistant usage has been seen in that agent's own
+file, same convention as `totalUsage`/`subagentUsage`. `running` is `true`
+exactly while `toolUseId` (from `.meta.json`) still has an unresolved entry
+in the main-chain running heuristic (`state.pendingSubagents`) — i.e. no
+`tool_result` matching that dispatch has arrived yet in the main transcript;
+it's independent of whether the agent's own `.jsonl` file is still growing.
+A finished subagent whose dispatch was never seen as pending in the main
+chain at all (older transcript, or the dispatch predates this scanner having
+run) is still reported, just with `running: false`.
+
+Degrades to an empty `agents: []`, never throwing, when: the `subagents/`
+directory doesn't exist yet (older CLI build, or this session hasn't
+dispatched a subagent yet); an individual `agent-<agentId>.jsonl` disappears
+mid-scan; a line fails to parse (including a half-written trailing line, the
+same tolerance as the main transcript); or `readdir`/`stat` fails for any
+other reason. Each agent file's meta lookup and content scan degrade
+independently — a broken sidecar for one agent never affects another's
+entry.
 
 **`TranscriptTurn.continuation: boolean`** — `true` when the turn's prompt
 text matches, as an anchored (`^`), case-insensitive prefix (not a substring
