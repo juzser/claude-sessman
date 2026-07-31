@@ -172,6 +172,71 @@ describe("subagent-index", () => {
     expect(records[0].usage).toEqual({ inputTokens: 10, outputTokens: 2, cacheReadTokens: 0, cacheCreationTokens: 0 });
   });
 
+  it("degrades to a record with null meta fields when .meta.json is not valid JSON at all, and retries the file on a later poll once it's fixed", async () => {
+    await mkdir(subagentsDir, { recursive: true });
+    const filePath = path.join(subagentsDir, "agent-synthetic-agent-4.jsonl");
+    await writeFile(
+      filePath,
+      assistantUsageLine("msg_synthetic_f", { input: 4, output: 1 }, "meta file is garbage", "synthetic-agent-4"),
+      "utf8",
+    );
+    const metaPath = path.join(subagentsDir, "agent-synthetic-agent-4.meta.json");
+    await writeFile(metaPath, "this is not json at all {{{", "utf8");
+
+    let state = await refreshSubagentIndex(emptySubagentIndexState(), transcriptPath, sessionId);
+    let records = toSubagentRecords(state);
+
+    expect(records).toHaveLength(1);
+    expect(records[0].agentType).toBeNull();
+    expect(records[0].description).toBeNull();
+    expect(records[0].spawnDepth).toBeNull();
+    expect(records[0].toolUseId).toBeNull();
+    expect(records[0].usage).toEqual({ inputTokens: 4, outputTokens: 1, cacheReadTokens: 0, cacheCreationTokens: 0 });
+
+    // A completely unparseable meta.json never "loads", so it's retried on
+    // the next poll — once the writer catches up with valid content, the
+    // fields populate without needing to re-discover the agent.
+    await writeFile(metaPath, metaJson({ toolUseId: "toolu_synthetic_4" }), "utf8");
+    state = await refreshSubagentIndex(state, transcriptPath, sessionId);
+    records = toSubagentRecords(state);
+
+    expect(records[0].toolUseId).toBe("toolu_synthetic_4");
+  });
+
+  it("degrades to null fields (only the wrong-typed/missing ones) when .meta.json is valid JSON of the wrong shape, and does not retry once loaded", async () => {
+    await mkdir(subagentsDir, { recursive: true });
+    const filePath = path.join(subagentsDir, "agent-synthetic-agent-5.jsonl");
+    await writeFile(
+      filePath,
+      assistantUsageLine("msg_synthetic_g", { input: 6, output: 3 }, "meta file has the wrong shape", "synthetic-agent-5"),
+      "utf8",
+    );
+    const metaPath = path.join(subagentsDir, "agent-synthetic-agent-5.meta.json");
+    // Valid JSON, valid object — but toolUseId is a number and the rest are absent.
+    await writeFile(metaPath, JSON.stringify({ toolUseId: 12345 }), "utf8");
+
+    let state = await refreshSubagentIndex(emptySubagentIndexState(), transcriptPath, sessionId);
+    let records = toSubagentRecords(state);
+
+    expect(records).toHaveLength(1);
+    expect(records[0].agentType).toBeNull();
+    expect(records[0].description).toBeNull();
+    expect(records[0].spawnDepth).toBeNull();
+    expect(records[0].toolUseId).toBeNull(); // wrong-typed, not coerced
+    expect(records[0].usage).toEqual({ inputTokens: 6, outputTokens: 3, cacheReadTokens: 0, cacheCreationTokens: 0 });
+
+    // Unlike unparseable JSON, a valid-but-wrong-shaped object counts as
+    // "loaded" — it's not retried, even if the writer later fixes it. This is
+    // the current, intentional behavior (a stable-but-wrong file is assumed
+    // to stay wrong rather than polled forever); pinned here so a future
+    // change to that assumption is a deliberate one, not an accident.
+    await writeFile(metaPath, metaJson({ toolUseId: "toolu_synthetic_5" }), "utf8");
+    state = await refreshSubagentIndex(state, transcriptPath, sessionId);
+    records = toSubagentRecords(state);
+
+    expect(records[0].toolUseId).toBeNull();
+  });
+
   it("sumSubagentUsage sums usage across multiple agents, skipping ones with no usage yet", async () => {
     await mkdir(subagentsDir, { recursive: true });
     await writeFile(

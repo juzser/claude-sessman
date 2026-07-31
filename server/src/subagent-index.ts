@@ -158,7 +158,14 @@ function applyAgentLine(fileState: AgentFileState, rawLine: string): void {
   applyAgentEntry(fileState, parsed);
 }
 
-/** Reads and validates `agent-<agentId>.meta.json`. Missing file, unreadable file, or malformed/wrong-shaped JSON all degrade to `null` rather than throwing. */
+/**
+ * Reads and validates `agent-<agentId>.meta.json`. Never throws. A missing
+ * file, an unreadable file, JSON that fails to parse, or valid JSON that
+ * isn't an object all return `null` (so `refreshOneAgent` leaves `metaLoaded`
+ * false and retries on a later poll). Valid JSON that IS an object but has
+ * wrong-typed or missing fields returns a non-null meta with just those
+ * fields set to `null` — that counts as loaded and is not retried again.
+ */
 async function readAgentMeta(subagentsDir: string, agentId: string): Promise<SubagentMeta | null> {
   const metaPath = path.join(subagentsDir, `agent-${agentId}.meta.json`);
   let raw: string;
