@@ -1,4 +1,4 @@
-import { appendFile, mkdtemp, rm, unlink, writeFile } from "node:fs/promises";
+import { appendFile, mkdtemp, readFile, rm, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -217,6 +217,18 @@ describe("TranscriptIndexCache", () => {
     const offsetAfterFirst = firstSummary?.scannedBytes ?? 0;
     expect(offsetAfterFirst).toBe(Buffer.byteLength(`${first}\n`));
 
+    // Overwrite the already-scanned first line in place with a same-length
+    // sentinel. Byte length is unchanged, so size/offset math is undisturbed and
+    // the refresh below is still treated as a plain append. A scan that quietly
+    // restarted from byte 0 would pick the sentinel up; a truly incremental one
+    // cannot, because it never re-reads those bytes.
+    const sentinel = "REWRITTEN-IF-RESCANNED";
+    const original = "first synthetic prompt";
+    expect(Buffer.byteLength(sentinel)).toBe(Buffer.byteLength(original));
+    const patched = (await readFile(transcriptPath, "utf8")).replace(original, sentinel);
+    expect(patched).toContain(sentinel);
+    await writeFile(transcriptPath, patched);
+
     const second = userPromptLine("second synthetic prompt", "2026-01-01T00:00:01.000Z");
     await appendFile(transcriptPath, `${second}\n`);
 
@@ -225,6 +237,8 @@ describe("TranscriptIndexCache", () => {
     expect(secondSummary?.turnCount).toBe(2);
     expect(secondSummary?.lastUserPrompt).toEqual({ text: "second synthetic prompt", truncated: false });
     expect(secondSummary?.scannedBytes).toBe(offsetAfterFirst + Buffer.byteLength(`${second}\n`));
+    // The first turn still carries the text captured by the first scan.
+    expect(secondSummary?.recentTurns[0]?.prompt).toEqual({ text: original, truncated: false });
   });
 
   it("re-reads a half-written trailing line instead of parsing it as garbage", async () => {
