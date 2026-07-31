@@ -22,5 +22,17 @@ export function createApp(
     return c.json({ sessions });
   });
 
+  app.get("/api/sessions/:sessionId/detail", async (c) => {
+    const sessionId = c.req.param("sessionId");
+    const sessions = await getSessions(config, gitCache, transcriptIndexCache, { includeDead: true });
+    const session = sessions.find((s) => s.sessionId === sessionId);
+    if (!session) {
+      return c.json({ error: "Session not found" }, 404);
+    }
+
+    const transcriptDetail = transcriptIndexCache.getDetailSummary(session.sessionId, session.transcriptPath);
+    return c.json({ session, transcriptDetail });
+  });
+
   return app;
 }

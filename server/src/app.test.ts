@@ -70,4 +70,38 @@ describe("createApp", () => {
       "dead-session",
     ]);
   });
+
+  it("GET /api/sessions/:sessionId/detail returns the enriched session plus transcript detail", async () => {
+    const sessionId = "detail-session";
+    await writeFile(
+      path.join(sessionsDir, "detail.json"),
+      JSON.stringify({
+        pid: process.pid,
+        sessionId,
+        cwd: "/tmp/detail-cwd",
+        startedAt: Date.now(),
+        status: "busy",
+      }),
+    );
+
+    const app = createApp({ sessionsDir, projectsDir }, new GitInfoCache(), transcriptIndexCache);
+    const res = await app.request(`/api/sessions/${sessionId}/detail`);
+    expect(res.status).toBe(200);
+
+    const body = (await res.json()) as {
+      session: { sessionId: string };
+      transcriptDetail: unknown;
+    };
+    expect(body.session.sessionId).toBe(sessionId);
+    // No transcript file exists for this session, so the index hasn't scanned
+    // anything yet — detail is null until the first scan lands, same
+    // contract as transcriptSummary on the plain session list.
+    expect(body.transcriptDetail).toBeNull();
+  });
+
+  it("GET /api/sessions/:sessionId/detail returns 404 for an unknown session id", async () => {
+    const app = createApp({ sessionsDir, projectsDir }, new GitInfoCache(), transcriptIndexCache);
+    const res = await app.request("/api/sessions/no-such-session/detail");
+    expect(res.status).toBe(404);
+  });
 });
