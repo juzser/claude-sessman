@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { fetchSessionDetail, focusSession, SESSMAN_CLIENT_HEADER } from "./sessman-api";
+import { fetchSessionDetail, fetchSessionFlow, focusSession, SESSMAN_CLIENT_HEADER } from "./sessman-api";
 import type { FetchLike, FetchResponseLike } from "./sessman-api";
 
 function fakeResponse(status: number, body: unknown = {}): FetchResponseLike {
@@ -115,6 +115,43 @@ describe("fetchSessionDetail", () => {
   it("maps a thrown fetch error to a network-error outcome", async () => {
     const fetchImpl: FetchLike = () => Promise.reject(new Error("offline"));
     const outcome = await fetchSessionDetail("s1", fetchImpl);
+    expect(outcome.ok).toBe(false);
+    if (!outcome.ok) expect(outcome.reason).toBe("network-error");
+  });
+});
+
+describe("fetchSessionFlow", () => {
+  it("GETs the flow endpoint and returns the parsed session plus transcript flow", async () => {
+    const calls: Array<{ url: string; init?: { method?: string; headers?: Record<string, string> } }> = [];
+    const body = { session: { sessionId: "s1" }, transcriptFlow: null };
+    const fetchImpl: FetchLike = (url, init) => {
+      calls.push({ url, init });
+      return Promise.resolve(fakeResponse(200, body));
+    };
+
+    const outcome = await fetchSessionFlow("s1", fetchImpl);
+
+    expect(calls[0].url).toBe("/api/sessions/s1/flow");
+    expect(outcome).toEqual({ ok: true, session: body.session, transcriptFlow: null });
+  });
+
+  it("maps 404 to a distinct not-found outcome", async () => {
+    const fetchImpl: FetchLike = () => Promise.resolve(fakeResponse(404));
+    const outcome = await fetchSessionFlow("s1", fetchImpl);
+    expect(outcome.ok).toBe(false);
+    if (!outcome.ok) expect(outcome.reason).toBe("not-found");
+  });
+
+  it("maps an unexpected status to a generic unknown outcome", async () => {
+    const fetchImpl: FetchLike = () => Promise.resolve(fakeResponse(500));
+    const outcome = await fetchSessionFlow("s1", fetchImpl);
+    expect(outcome.ok).toBe(false);
+    if (!outcome.ok) expect(outcome.reason).toBe("unknown");
+  });
+
+  it("maps a thrown fetch error to a network-error outcome", async () => {
+    const fetchImpl: FetchLike = () => Promise.reject(new Error("offline"));
+    const outcome = await fetchSessionFlow("s1", fetchImpl);
     expect(outcome.ok).toBe(false);
     if (!outcome.ok) expect(outcome.reason).toBe("network-error");
   });

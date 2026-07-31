@@ -65,6 +65,7 @@ function assistantLine(
 function assistantToolUseLine(
   toolName: string,
   timestamp: string,
+  input: unknown = { synthetic: true },
   overrides: Record<string, unknown> = {},
 ): string {
   return JSON.stringify({
@@ -74,9 +75,26 @@ function assistantToolUseLine(
     message: {
       role: "assistant",
       model: "synthetic-model-1",
-      content: [{ type: "tool_use", name: toolName, input: { synthetic: true } }],
+      content: [{ type: "tool_use", name: toolName, input }],
     },
     ...overrides,
+  });
+}
+
+/** Builds one assistant line containing several tool_use blocks, to exercise the per-turn cap. */
+function assistantMultiToolUseLine(
+  toolUses: Array<{ name: string; input?: unknown }>,
+  timestamp: string,
+): string {
+  return JSON.stringify({
+    type: "assistant",
+    timestamp,
+    isSidechain: false,
+    message: {
+      role: "assistant",
+      model: "synthetic-model-1",
+      content: toolUses.map((t) => ({ type: "tool_use", name: t.name, input: t.input ?? { synthetic: true } })),
+    },
   });
 }
 
@@ -172,7 +190,7 @@ describe("TranscriptIndexCache", () => {
       userPromptLine("main chain prompt", "2026-01-01T00:00:00.000Z"),
       assistantLine("main chain gist", "2026-01-01T00:00:01.000Z"),
       userPromptLine("sidechain prompt", "2026-01-01T00:00:02.000Z", { isSidechain: true }),
-      assistantToolUseLine("Grep", "2026-01-01T00:00:03.000Z", { isSidechain: true }),
+      assistantToolUseLine("Grep", "2026-01-01T00:00:03.000Z", { synthetic: true }, { isSidechain: true }),
       assistantLine("sidechain gist", "2026-01-01T00:00:04.000Z", { isSidechain: true }),
     ];
     await writeFile(transcriptPath, lines.map((l) => `${l}\n`).join(""));
@@ -337,5 +355,181 @@ describe("TranscriptIndexCache", () => {
 
     const summary = cache.getSummary(sessionId, transcriptPath);
     expect(summary?.turnCount).toBe(1);
+  });
+
+  describe("tool-call targets and files touched (M3 flow view)", () => {
+    it("derives a human-meaningful target from tool_use input, per tool kind", async () => {
+      const lines = [
+        userPromptLine("prompt for tool targets", "2026-01-01T00:00:00.000Z"),
+        assistantToolUseLine("Read", "2026-01-01T00:00:01.000Z", { file_path: "/synthetic/path/one.ts" }),
+        assistantToolUseLine("NotebookEdit", "2026-01-01T00:00:02.000Z", { notebook_path: "/synthetic/note.ipynb" }),
+        assistantToolUseLine("Grep", "2026-01-01T00:00:03.000Z", { pattern: "synthetic-pattern" }),
+        assistantToolUseLine("Bash", "2026-01-01T00:00:04.000Z", { command: "echo synthetic" }),
+        assistantToolUseLine("TodoWrite", "2026-01-01T00:00:05.000Z", { todos: [] }),
+      ];
+      await writeFile(transcriptPath, lines.map((l) => `${l}\n`).join(""));
+
+      const cache = new TranscriptIndexCache();
+      await cache.refreshAndWait(sessionId, transcriptPath);
+      const summary = cache.getSummary(sessionId, transcriptPath);
+
+      expect(summary?.recentTurns[0]?.toolCalls).toEqual([
+        { name: "Read", target: "/synthetic/path/one.ts" },
+        { name: "NotebookEdit", target: "/synthetic/note.ipynb" },
+        { name: "Grep", target: "synthetic-pattern" },
+        { name: "Bash", target: "echo synthetic" },
+        { name: "TodoWrite", target: null },
+      ]);
+    });
+
+    it("falls back to a null target without throwing for malformed tool_use input", async () => {
+      const lines = [
+        userPromptLine("prompt for malformed input", "2026-01-01T00:00:00.000Z"),
+        // input missing entirely
+        JSON.stringify({
+          type: "assistant",
+          timestamp: "2026-01-01T00:00:01.000Z",
+          isSidechain: false,
+          message: { role: "assistant", model: "synthetic-model-1", content: [{ type: "tool_use", name: "Read" }] },
+        }),
+        // input is not an object
+        assistantToolUseLine("Read", "2026-01-01T00:00:02.000Z", "not-an-object"),
+        // file_path is not a string
+        assistantToolUseLine("Read", "2026-01-01T00:00:03.000Z", { file_path: 12345 }),
+      ];
+      await writeFile(transcriptPath, lines.map((l) => `${l}\n`).join(""));
+
+      const cache = new TranscriptIndexCache();
+      await expect(cache.refreshAndWait(sessionId, transcriptPath)).resolves.toBeUndefined();
+      const summary = cache.getSummary(sessionId, transcriptPath);
+
+      expect(summary?.recentTurns[0]?.toolCalls).toEqual([
+        { name: "Read", target: null },
+        { name: "Read", target: null },
+        { name: "Read", target: null },
+      ]);
+      expect(summary?.recentTurns[0]?.filesTouched).toEqual([]);
+    });
+
+    it("truncates a tool target to 120 chars", async () => {
+      const longCommand = "x".repeat(300);
+      const lines = [
+        userPromptLine("prompt for long target", "2026-01-01T00:00:00.000Z"),
+        assistantToolUseLine("Bash", "2026-01-01T00:00:01.000Z", { command: longCommand }),
+      ];
+      await writeFile(transcriptPath, lines.map((l) => `${l}\n`).join(""));
+
+      const cache = new TranscriptIndexCache();
+      await cache.refreshAndWait(sessionId, transcriptPath);
+      const summary = cache.getSummary(sessionId, transcriptPath);
+
+      expect(summary?.recentTurns[0]?.toolCalls[0]?.target).toHaveLength(120);
+    });
+
+    it("caps recorded tool calls per turn at 40 and reports the overflow count", async () => {
+      const toolUses = Array.from({ length: 45 }, (_, i) => ({
+        name: "Bash",
+        input: { command: `synthetic-cmd-${i}` },
+      }));
+      const lines = [
+        userPromptLine("prompt with many tool calls", "2026-01-01T00:00:00.000Z"),
+        assistantMultiToolUseLine(toolUses, "2026-01-01T00:00:01.000Z"),
+      ];
+      await writeFile(transcriptPath, lines.map((l) => `${l}\n`).join(""));
+
+      const cache = new TranscriptIndexCache();
+      await cache.refreshAndWait(sessionId, transcriptPath);
+      const summary = cache.getSummary(sessionId, transcriptPath);
+
+      expect(summary?.recentTurns[0]?.toolCalls).toHaveLength(40);
+      expect(summary?.recentTurns[0]?.toolCalls[0]?.target).toBe("synthetic-cmd-0");
+      expect(summary?.recentTurns[0]?.toolCallsOmitted).toBe(5);
+    });
+
+    it("reports zero omitted tool calls when the per-turn cap isn't hit", async () => {
+      const lines = [
+        userPromptLine("prompt with few tool calls", "2026-01-01T00:00:00.000Z"),
+        assistantToolUseLine("Bash", "2026-01-01T00:00:01.000Z", { command: "echo one" }),
+        assistantToolUseLine("Bash", "2026-01-01T00:00:02.000Z", { command: "echo two" }),
+      ];
+      await writeFile(transcriptPath, lines.map((l) => `${l}\n`).join(""));
+
+      const cache = new TranscriptIndexCache();
+      await cache.refreshAndWait(sessionId, transcriptPath);
+      const summary = cache.getSummary(sessionId, transcriptPath);
+
+      expect(summary?.recentTurns[0]?.toolCalls).toHaveLength(2);
+      expect(summary?.recentTurns[0]?.toolCallsOmitted).toBe(0);
+    });
+
+    it("derives a deduped files-touched list from file-tool targets in a turn", async () => {
+      const lines = [
+        userPromptLine("prompt for files touched", "2026-01-01T00:00:00.000Z"),
+        assistantToolUseLine("Read", "2026-01-01T00:00:01.000Z", { file_path: "/synthetic/a.ts" }),
+        assistantToolUseLine("Edit", "2026-01-01T00:00:02.000Z", { file_path: "/synthetic/a.ts" }),
+        assistantToolUseLine("Edit", "2026-01-01T00:00:03.000Z", { file_path: "/synthetic/b.ts" }),
+        assistantToolUseLine("Grep", "2026-01-01T00:00:04.000Z", { pattern: "synthetic-pattern" }),
+      ];
+      await writeFile(transcriptPath, lines.map((l) => `${l}\n`).join(""));
+
+      const cache = new TranscriptIndexCache();
+      await cache.refreshAndWait(sessionId, transcriptPath);
+      const summary = cache.getSummary(sessionId, transcriptPath);
+
+      expect(summary?.recentTurns[0]?.filesTouched).toEqual(["/synthetic/a.ts", "/synthetic/b.ts"]);
+    });
+  });
+
+  describe("flow retention (M3)", () => {
+    it("returns null from getFlowSummary before the first scan completes", () => {
+      const cache = new TranscriptIndexCache();
+      expect(cache.getFlowSummary(sessionId, transcriptPath)).toBeNull();
+    });
+
+    it("retains up to 100 turns for the flow view while summaries still return the last 20, oldest evicted first", async () => {
+      const base = new Date("2026-01-01T00:00:00.000Z").getTime();
+      const lines: string[] = [];
+      for (let i = 0; i < 120; i++) {
+        lines.push(userPromptLine(`synthetic prompt ${i}`, new Date(base + i * 1000).toISOString()));
+      }
+      await writeFile(transcriptPath, lines.map((l) => `${l}\n`).join(""));
+
+      const cache = new TranscriptIndexCache();
+      await cache.refreshAndWait(sessionId, transcriptPath);
+
+      const summary = cache.getSummary(sessionId, transcriptPath);
+      expect(summary?.turnCount).toBe(120);
+      expect(summary?.recentTurns).toHaveLength(20);
+      expect(summary?.recentTurns[0]?.index).toBe(100);
+      expect(summary?.recentTurns[19]?.index).toBe(119);
+
+      const detail = cache.getDetailSummary(sessionId, transcriptPath);
+      expect(detail?.recentTurns).toHaveLength(20);
+
+      const flow = cache.getFlowSummary(sessionId, transcriptPath);
+      expect(flow?.turnCount).toBe(120);
+      expect(flow?.retainedTurnCount).toBe(100);
+      expect(flow?.turnsDropped).toBe(true);
+      expect(flow?.turns).toHaveLength(100);
+      expect(flow?.turns[0]?.index).toBe(20);
+      expect(flow?.turns[99]?.index).toBe(119);
+    });
+
+    it("reports turnsDropped false when the transcript has fewer turns than the flow retention cap", async () => {
+      const lines = [
+        userPromptLine("only prompt", "2026-01-01T00:00:00.000Z"),
+        assistantLine("only gist", "2026-01-01T00:00:01.000Z"),
+      ];
+      await writeFile(transcriptPath, lines.map((l) => `${l}\n`).join(""));
+
+      const cache = new TranscriptIndexCache();
+      await cache.refreshAndWait(sessionId, transcriptPath);
+      const flow = cache.getFlowSummary(sessionId, transcriptPath);
+
+      expect(flow?.turnCount).toBe(1);
+      expect(flow?.retainedTurnCount).toBe(1);
+      expect(flow?.turnsDropped).toBe(false);
+      expect(flow?.turns).toHaveLength(1);
+    });
   });
 });

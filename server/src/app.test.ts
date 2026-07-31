@@ -121,6 +121,40 @@ describe("createApp", () => {
     expect(res.status).toBe(404);
   });
 
+  it("GET /api/sessions/:sessionId/flow returns the enriched session plus transcript flow", async () => {
+    const sessionId = "flow-session";
+    await writeFile(
+      path.join(sessionsDir, "flow.json"),
+      JSON.stringify({
+        pid: process.pid,
+        sessionId,
+        cwd: "/tmp/flow-cwd",
+        startedAt: Date.now(),
+        status: "busy",
+      }),
+    );
+
+    const app = createApp({ sessionsDir, projectsDir }, new GitInfoCache(), transcriptIndexCache);
+    const res = await app.request(`/api/sessions/${sessionId}/flow`);
+    expect(res.status).toBe(200);
+
+    const body = (await res.json()) as {
+      session: { sessionId: string };
+      transcriptFlow: unknown;
+    };
+    expect(body.session.sessionId).toBe(sessionId);
+    // No transcript file exists for this session, so the index hasn't scanned
+    // anything yet — flow is null until the first scan lands, same contract
+    // as transcriptDetail on the /detail route.
+    expect(body.transcriptFlow).toBeNull();
+  });
+
+  it("GET /api/sessions/:sessionId/flow returns 404 for an unknown session id", async () => {
+    const app = createApp({ sessionsDir, projectsDir }, new GitInfoCache(), transcriptIndexCache);
+    const res = await app.request("/api/sessions/no-such-session/flow");
+    expect(res.status).toBe(404);
+  });
+
   it("POST /api/sessions/:sessionId/focus rejects a session with no resolvable tty, without invoking the runner", async () => {
     const sessionId = "no-tty-session";
     await writeFile(

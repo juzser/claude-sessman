@@ -79,6 +79,18 @@ export function createApp(
     return c.json({ session, transcriptDetail });
   });
 
+  app.get("/api/sessions/:sessionId/flow", async (c) => {
+    const sessionId = c.req.param("sessionId");
+    const sessions = await getSessions(config, gitCache, transcriptIndexCache, { includeDead: true });
+    const session = sessions.find((s) => s.sessionId === sessionId);
+    if (!session) {
+      return c.json({ error: "Session not found" }, 404);
+    }
+
+    const transcriptFlow = transcriptIndexCache.getFlowSummary(session.sessionId, session.transcriptPath);
+    return c.json({ session, transcriptFlow });
+  });
+
   app.post("/api/sessions/:sessionId/focus", async (c) => {
     const sessionId = c.req.param("sessionId");
     // The tty is always resolved server-side from the registry/live-process

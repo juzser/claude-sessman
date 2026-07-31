@@ -1,12 +1,13 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from "vue";
 import { shortenPath } from "../lib/path";
-import { fetchSessionDetail } from "../lib/sessman-api";
+import { fetchSessionDetail, fetchSessionFlow } from "../lib/sessman-api";
 import { statusVisualFor } from "../lib/status";
 import { formatDurationShort } from "../lib/time-ago";
 import { formatTokenCount, sortToolCounts } from "../lib/transcript-format";
-import type { EnrichedSession, TranscriptSummary } from "../lib/types";
+import type { EnrichedSession, FlowSummary, TranscriptSummary } from "../lib/types";
 import FocusButton from "./FocusButton.vue";
+import SessionFlowView from "./SessionFlowView.vue";
 import TranscriptTurnList from "./TranscriptTurnList.vue";
 
 const props = defineProps<{
@@ -23,6 +24,17 @@ const state = ref<DrawerState>("idle");
 const session = ref<EnrichedSession | null>(null);
 const transcriptDetail = ref<TranscriptSummary | null>(null);
 const errorMessage = ref("");
+
+type Tab = "turns" | "flow";
+const activeTab = ref<Tab>("turns");
+
+type FlowLoadState = "idle" | "loading" | "loaded" | "error";
+const flowState = ref<FlowLoadState>("idle");
+const flowSummary = ref<FlowSummary | null>(null);
+const flowErrorMessage = ref("");
+// Which session's flow has already been fetched, so re-selecting the Flow
+// tab for the same session doesn't refetch; a session switch resets this.
+const flowLoadedForSessionId = ref<string | null>(null);
 
 const closeButtonRef = ref<HTMLButtonElement | null>(null);
 let lastFocused: HTMLElement | null = null;
@@ -51,6 +63,42 @@ function retry(): void {
   if (props.sessionId) load(props.sessionId);
 }
 
+async function loadFlow(sessionId: string): Promise<void> {
+  flowState.value = "loading";
+  const outcome = await fetchSessionFlow(sessionId);
+  // Same stale-response guard as load(): the drawer may have moved on to a
+  // different (or no) session while this fetch was in flight.
+  if (props.sessionId !== sessionId) return;
+
+  if (outcome.ok) {
+    flowSummary.value = outcome.transcriptFlow;
+    flowLoadedForSessionId.value = sessionId;
+    flowState.value = "loaded";
+    return;
+  }
+
+  flowErrorMessage.value = outcome.message;
+  flowState.value = "error";
+}
+
+function selectTab(tab: Tab): void {
+  activeTab.value = tab;
+  if (tab !== "flow" || !session.value) return;
+  // flowLoadedForSessionId is still null while the first fetch is in flight, so
+  // it alone would let a Turns<->Flow toggle fire a second request for the same
+  // session. Two concurrent fetches can resolve out of order, and the loser
+  // would win: the cross-session guard in loadFlow() can't help here, both
+  // requests carry the same sessionId.
+  if (flowState.value === "loading") return;
+  if (flowLoadedForSessionId.value === session.value.sessionId) return;
+  void loadFlow(session.value.sessionId);
+}
+
+function retryFlow(): void {
+  // Same reason: a double-click on Retry must not open a second fetch.
+  if (session.value && flowState.value !== "loading") void loadFlow(session.value.sessionId);
+}
+
 function close(): void {
   emit("close");
 }
@@ -65,6 +113,14 @@ function onKeydown(event: KeyboardEvent): void {
 watch(
   () => props.sessionId,
   async (next, prev) => {
+    // A session switch (or close) must not leak the previous session's Flow
+    // tab state into the next one.
+    activeTab.value = "turns";
+    flowState.value = "idle";
+    flowSummary.value = null;
+    flowErrorMessage.value = "";
+    flowLoadedForSessionId.value = null;
+
     if (next === null) {
       lastFocused?.focus();
       lastFocused = null;
@@ -161,49 +217,92 @@ const contextTokenLabel = computed(() =>
         <FocusButton :session-id="session.sessionId" />
 
         <template v-if="transcriptDetail">
-          <section>
-            <h3 class="mb-1 text-xs font-semibold uppercase tracking-wide text-slate-500">Last prompt</h3>
-            <p class="whitespace-pre-wrap text-sm text-slate-200">
-              {{ transcriptDetail.lastUserPrompt?.text || "—"
-              }}<span v-if="transcriptDetail.lastUserPrompt?.truncated">…</span>
-            </p>
-          </section>
+          <nav class="flex gap-1 text-xs" role="tablist">
+            <button
+              type="button"
+              role="tab"
+              :aria-selected="activeTab === 'turns'"
+              class="rounded-full border px-3 py-1"
+              :class="
+                activeTab === 'turns'
+                  ? 'border-slate-400 text-slate-100'
+                  : 'border-slate-700 text-slate-400 hover:border-slate-500'
+              "
+              @click="selectTab('turns')"
+            >
+              Turns
+            </button>
+            <button
+              type="button"
+              role="tab"
+              :aria-selected="activeTab === 'flow'"
+              class="rounded-full border px-3 py-1"
+              :class="
+                activeTab === 'flow'
+                  ? 'border-slate-400 text-slate-100'
+                  : 'border-slate-700 text-slate-400 hover:border-slate-500'
+              "
+              @click="selectTab('flow')"
+            >
+              Flow
+            </button>
+          </nav>
 
-          <section>
-            <h3 class="mb-1 text-xs font-semibold uppercase tracking-wide text-slate-500">Last reply gist</h3>
-            <p class="whitespace-pre-wrap text-sm text-slate-200">
-              {{ transcriptDetail.lastAssistantGist?.text || "—"
-              }}<span v-if="transcriptDetail.lastAssistantGist?.truncated">…</span>
-            </p>
-          </section>
+          <template v-if="activeTab === 'turns'">
+            <section>
+              <h3 class="mb-1 text-xs font-semibold uppercase tracking-wide text-slate-500">Last prompt</h3>
+              <p class="whitespace-pre-wrap text-sm text-slate-200">
+                {{ transcriptDetail.lastUserPrompt?.text || "—"
+                }}<span v-if="transcriptDetail.lastUserPrompt?.truncated">…</span>
+              </p>
+            </section>
 
-          <section class="grid grid-cols-2 gap-x-4 gap-y-1 text-xs text-slate-400 sm:grid-cols-3">
-            <span>model: {{ transcriptDetail.model ?? "unknown" }}</span>
-            <span>{{ transcriptDetail.turnCount }} turns</span>
-            <span>{{ transcriptDetail.toolCallsTotal }} tool calls</span>
-            <template v-if="transcriptDetail.usage">
-              <span>input {{ formatTokenCount(transcriptDetail.usage.inputTokens) }}</span>
-              <span>output {{ formatTokenCount(transcriptDetail.usage.outputTokens) }}</span>
-              <span>context {{ contextTokenLabel }}</span>
-            </template>
-          </section>
+            <section>
+              <h3 class="mb-1 text-xs font-semibold uppercase tracking-wide text-slate-500">Last reply gist</h3>
+              <p class="whitespace-pre-wrap text-sm text-slate-200">
+                {{ transcriptDetail.lastAssistantGist?.text || "—"
+                }}<span v-if="transcriptDetail.lastAssistantGist?.truncated">…</span>
+              </p>
+            </section>
 
-          <section v-if="toolCounts.length > 0">
-            <h3 class="mb-1 text-xs font-semibold uppercase tracking-wide text-slate-500">Tool calls</h3>
-            <ul class="flex flex-wrap gap-1.5 text-xs text-slate-300">
-              <li
-                v-for="tool in toolCounts"
-                :key="tool.name"
-                class="rounded-full border border-slate-700 px-2 py-0.5"
-              >
-                {{ tool.name }} × {{ tool.count }}
-              </li>
-            </ul>
-          </section>
+            <section class="grid grid-cols-2 gap-x-4 gap-y-1 text-xs text-slate-400 sm:grid-cols-3">
+              <span>model: {{ transcriptDetail.model ?? "unknown" }}</span>
+              <span>{{ transcriptDetail.turnCount }} turns</span>
+              <span>{{ transcriptDetail.toolCallsTotal }} tool calls</span>
+              <template v-if="transcriptDetail.usage">
+                <span>input {{ formatTokenCount(transcriptDetail.usage.inputTokens) }}</span>
+                <span>output {{ formatTokenCount(transcriptDetail.usage.outputTokens) }}</span>
+                <span>context {{ contextTokenLabel }}</span>
+              </template>
+            </section>
 
-          <section>
-            <h3 class="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Recent turns</h3>
-            <TranscriptTurnList :turns="transcriptDetail.recentTurns" />
+            <section v-if="toolCounts.length > 0">
+              <h3 class="mb-1 text-xs font-semibold uppercase tracking-wide text-slate-500">Tool calls</h3>
+              <ul class="flex flex-wrap gap-1.5 text-xs text-slate-300">
+                <li
+                  v-for="tool in toolCounts"
+                  :key="tool.name"
+                  class="rounded-full border border-slate-700 px-2 py-0.5"
+                >
+                  {{ tool.name }} × {{ tool.count }}
+                </li>
+              </ul>
+            </section>
+
+            <section>
+              <h3 class="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Recent turns</h3>
+              <TranscriptTurnList :turns="transcriptDetail.recentTurns" />
+            </section>
+          </template>
+
+          <section v-else>
+            <h3 class="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Flow</h3>
+            <SessionFlowView
+              :state="flowState === 'idle' ? 'loading' : flowState"
+              :flow="flowSummary"
+              :error-message="flowErrorMessage"
+              @retry="retryFlow"
+            />
           </section>
         </template>
 

@@ -6,7 +6,26 @@ const SUMMARY_TEXT_LIMIT = 400;
 const DETAIL_TEXT_LIMIT = 2000;
 /** Upper bound on how much of any single captured prompt/gist we ever retain in memory. */
 const MAX_CAPTURE_LENGTH = DETAIL_TEXT_LIMIT;
+/** How many turns `GET /api/sessions/:id/detail` exposes via `recentTurns` — unchanged by the flow view. */
 const MAX_RECENT_TURNS = 20;
+/**
+ * How many turns the flow view (`GET /api/sessions/:id/flow`) can see, i.e. the
+ * actual ring-buffer size turns are held in before `MAX_RECENT_TURNS` slices
+ * the tail off for /detail. 100 turns is enough to render a useful flow graph
+ * without holding an unbounded amount of a transcript that can reach tens of
+ * MB in memory.
+ *
+ * Per-session worst case with this cap: 100 turns * (2000-char prompt + 2000-char
+ * gist + 40 tool calls * (~50-char name + 120-char target) + 40 * 120-char
+ * files-touched entries) ≈ 100 * (4_000 + 40*170 + 4_800) chars ≈ 1.56M chars,
+ * i.e. roughly 1.5-3 MB of JS string data per indexed session (UTF-16), bounded
+ * and independent of the transcript file's own size.
+ */
+const MAX_FLOW_TURNS = 100;
+/** Caps recorded tool calls per turn so one pathological turn (hundreds of tool_use blocks) can't balloon state. */
+const MAX_TOOL_CALLS_PER_TURN = 40;
+/** Tool-call target strings (file paths, patterns, commands) are truncated to this length. */
+const MAX_TOOL_TARGET_LENGTH = 120;
 
 export interface TruncatedText {
   text: string;
@@ -22,6 +41,16 @@ export interface TokenUsage {
   contextTokens: number;
 }
 
+export interface ToolCall {
+  name: string;
+  /**
+   * file_path/notebook_path for file tools, pattern for search tools, the
+   * command string for shell tools, else null (truncated to
+   * MAX_TOOL_TARGET_LENGTH chars).
+   */
+  target: string | null;
+}
+
 export interface TranscriptTurn {
   /** Position of this turn across the whole transcript (not reset by the ring buffer). */
   index: number;
@@ -29,7 +58,14 @@ export interface TranscriptTurn {
   at: string | null;
   prompt: TruncatedText;
   gist: TruncatedText;
+  /** Names only, in call order — derived from toolCalls; kept for existing consumers. */
   toolNames: string[];
+  /** Up to MAX_TOOL_CALLS_PER_TURN entries; see toolCallsOmitted for the overflow count. */
+  toolCalls: ToolCall[];
+  /** How many tool calls beyond MAX_TOOL_CALLS_PER_TURN happened in this turn but weren't recorded individually. */
+  toolCallsOmitted: number;
+  /** Deduped, insertion-ordered list of file-tool targets touched in this turn. */
+  filesTouched: string[];
 }
 
 export interface TranscriptSummary {
@@ -48,6 +84,17 @@ export interface TranscriptSummary {
   recentTurns: TranscriptTurn[];
 }
 
+/** Payload for the flow view: every retained turn (up to MAX_FLOW_TURNS), oldest first. */
+export interface FlowSummary {
+  /** Total turns seen across the whole transcript, including any evicted from the retained window. */
+  turnCount: number;
+  /** How many turns are actually present in `turns` (<= MAX_FLOW_TURNS). */
+  retainedTurnCount: number;
+  /** True when turnCount > retainedTurnCount, i.e. the oldest turns were evicted from the flow window. */
+  turnsDropped: boolean;
+  turns: TranscriptTurn[];
+}
+
 /** Internal, unbounded-length capture; truncated to a display limit only at read time. */
 interface Capture {
   raw: string;
@@ -60,7 +107,10 @@ interface MutableTurn {
   at: string | null;
   prompt: Capture;
   gist: Capture | null;
-  toolNames: string[];
+  toolCalls: ToolCall[];
+  toolCallsOmitted: number;
+  /** Insertion-ordered set of file-tool targets seen so far in this turn (Set preserves insertion order). */
+  fileTargets: Set<string>;
 }
 
 interface IndexState {
@@ -160,9 +210,29 @@ function readUsage(usage: unknown): TokenUsage | null {
 
 function pushTurn(state: IndexState, turn: MutableTurn): void {
   state.recentTurns.push(turn);
-  if (state.recentTurns.length > MAX_RECENT_TURNS) {
+  if (state.recentTurns.length > MAX_FLOW_TURNS) {
     state.recentTurns.shift();
   }
+}
+
+interface ExtractedTarget {
+  target: string | null;
+  /** True when the target came from a file-identifying field (file_path/notebook_path). */
+  isFileTarget: boolean;
+}
+
+/** Reads a human-meaningful target out of a tool_use block's `input`. Never throws. */
+function extractToolTarget(input: unknown): ExtractedTarget {
+  if (!isRecord(input)) return { target: null, isFileTarget: false };
+  if (typeof input.file_path === "string") return { target: input.file_path, isFileTarget: true };
+  if (typeof input.notebook_path === "string") return { target: input.notebook_path, isFileTarget: true };
+  if (typeof input.pattern === "string") return { target: input.pattern, isFileTarget: false };
+  if (typeof input.command === "string") return { target: input.command, isFileTarget: false };
+  return { target: null, isFileTarget: false };
+}
+
+function truncateTarget(target: string): string {
+  return target.length > MAX_TOOL_TARGET_LENGTH ? target.slice(0, MAX_TOOL_TARGET_LENGTH) : target;
 }
 
 /** Folds one already-JSON.parsed transcript line into the running index state. Never throws. */
@@ -188,7 +258,9 @@ function applyEntry(state: IndexState, entry: Record<string, unknown>): void {
       at: timestamp,
       prompt: promptCapture,
       gist: null,
-      toolNames: [],
+      toolCalls: [],
+      toolCallsOmitted: 0,
+      fileTargets: new Set(),
     });
     return;
   }
@@ -216,7 +288,18 @@ function applyEntry(state: IndexState, entry: Record<string, unknown>): void {
       } else if (block.type === "tool_use" && typeof block.name === "string") {
         state.toolCounts[block.name] = (state.toolCounts[block.name] ?? 0) + 1;
         state.toolCallsTotal += 1;
-        if (currentTurn) currentTurn.toolNames.push(block.name);
+        if (currentTurn) {
+          if (currentTurn.toolCalls.length < MAX_TOOL_CALLS_PER_TURN) {
+            const extracted = extractToolTarget(block.input);
+            const target = extracted.target === null ? null : truncateTarget(extracted.target);
+            currentTurn.toolCalls.push({ name: block.name, target });
+            if (extracted.isFileTarget && target !== null) {
+              currentTurn.fileTargets.add(target);
+            }
+          } else {
+            currentTurn.toolCallsOmitted += 1;
+          }
+        }
       }
     }
   }
@@ -309,7 +392,10 @@ function turnToSummary(turn: MutableTurn, limit: number): TranscriptTurn {
     at: turn.at,
     prompt: truncateTo(turn.prompt, limit),
     gist: turn.gist ? truncateTo(turn.gist, limit) : { text: "", truncated: false },
-    toolNames: [...turn.toolNames],
+    toolNames: turn.toolCalls.map((call) => call.name),
+    toolCalls: turn.toolCalls.map((call) => ({ ...call })),
+    toolCallsOmitted: turn.toolCallsOmitted,
+    filesTouched: [...turn.fileTargets],
   };
 }
 
@@ -325,7 +411,20 @@ function toSummary(state: IndexState, textLimit: number): TranscriptSummary {
     lastEntryAt: state.lastEntryAt,
     scannedBytes: state.offset,
     complete: true,
-    recentTurns: state.recentTurns.map((turn) => turnToSummary(turn, SUMMARY_TEXT_LIMIT)),
+    // /detail and the default summary only ever expose the last MAX_RECENT_TURNS,
+    // even though the underlying ring buffer (state.recentTurns) now holds up to
+    // MAX_FLOW_TURNS for the flow view — see toFlowSummary below.
+    recentTurns: state.recentTurns.slice(-MAX_RECENT_TURNS).map((turn) => turnToSummary(turn, SUMMARY_TEXT_LIMIT)),
+  };
+}
+
+/** Flow-view payload: every retained turn (up to MAX_FLOW_TURNS), oldest first. */
+function toFlowSummary(state: IndexState): FlowSummary {
+  return {
+    turnCount: state.turnCount,
+    retainedTurnCount: state.recentTurns.length,
+    turnsDropped: state.turnCount > state.recentTurns.length,
+    turns: state.recentTurns.map((turn) => turnToSummary(turn, SUMMARY_TEXT_LIMIT)),
   };
 }
 
@@ -353,6 +452,12 @@ export class TranscriptIndexCache {
     return this.read(sessionId, transcriptPath, DETAIL_TEXT_LIMIT);
   }
 
+  /** Flow-view payload: up to MAX_FLOW_TURNS retained turns, oldest first. Same non-blocking contract as getSummary. */
+  getFlowSummary(sessionId: string, transcriptPath: string): FlowSummary | null {
+    const state = this.resolveState(sessionId, transcriptPath);
+    return state ? toFlowSummary(state) : null;
+  }
+
   /** Test hook: waits for the in-flight scan (or starts and waits for one) so assertions are deterministic. */
   refreshAndWait(sessionId: string, transcriptPath: string): Promise<void> {
     const entry = this.cache.get(sessionId);
@@ -361,6 +466,12 @@ export class TranscriptIndexCache {
   }
 
   private read(sessionId: string, transcriptPath: string, textLimit: number): TranscriptSummary | null {
+    const state = this.resolveState(sessionId, transcriptPath);
+    return state ? toSummary(state, textLimit) : null;
+  }
+
+  /** Shared non-blocking read path: returns the last-known state (or null pre-scan) and kicks off a refresh as needed. */
+  private resolveState(sessionId: string, transcriptPath: string): IndexState | null {
     const entry = this.cache.get(sessionId);
     const now = Date.now();
 
@@ -374,7 +485,7 @@ export class TranscriptIndexCache {
     }
 
     const current = this.cache.get(sessionId);
-    return current?.state ? toSummary(current.state, textLimit) : null;
+    return current?.state ?? null;
   }
 
   private startRefresh(sessionId: string, transcriptPath: string): Promise<void> {
