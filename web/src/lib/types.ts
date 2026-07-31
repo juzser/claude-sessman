@@ -10,6 +10,47 @@ export interface GitInfo {
   dirty: boolean;
 }
 
+/** Mirrors server/src/transcript-index.ts TruncatedText. */
+export interface TruncatedText {
+  text: string;
+  truncated: boolean;
+}
+
+/** Mirrors server/src/transcript-index.ts TokenUsage. */
+export interface TokenUsage {
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheCreationTokens: number;
+  /** input + cacheRead + cacheCreation of the same message — what actually occupies the context window. */
+  contextTokens: number;
+}
+
+/** Mirrors server/src/transcript-index.ts TranscriptTurn. */
+export interface TranscriptTurn {
+  /** Position of this turn across the whole transcript (not reset by the ring buffer). */
+  index: number;
+  at: string | null;
+  prompt: TruncatedText;
+  gist: TruncatedText;
+  toolNames: string[];
+}
+
+/** Mirrors server/src/transcript-index.ts TranscriptSummary. */
+export interface TranscriptSummary {
+  turnCount: number;
+  lastUserPrompt: TruncatedText | null;
+  lastAssistantGist: TruncatedText | null;
+  model: string | null;
+  usage: TokenUsage | null;
+  toolCounts: Record<string, number>;
+  toolCallsTotal: number;
+  lastEntryAt: string | null;
+  scannedBytes: number;
+  complete: boolean;
+  recentTurns: TranscriptTurn[];
+}
+
 export interface EnrichedSession {
   pid: number;
   sessionId: string;
@@ -34,5 +75,7 @@ export interface EnrichedSession {
   transcriptPath: string;
   transcriptSize: number | null;
   transcriptMtime: number | null;
+  /** Null until the transcript index has completed its first scan of this session. */
+  transcriptSummary: TranscriptSummary | null;
   git: GitInfo | null;
 }

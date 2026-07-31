@@ -27,6 +27,7 @@ function makeSession(overrides: Partial<EnrichedSession>): EnrichedSession {
     transcriptPath: "/tmp/transcript.jsonl",
     transcriptSize: null,
     transcriptMtime: null,
+    transcriptSummary: null,
     git: null,
     ...overrides,
   };
