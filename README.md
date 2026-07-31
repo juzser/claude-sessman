@@ -14,7 +14,7 @@ codebase.
 
 - **M1** — session registry parsed/enriched, live card grid (done).
 - **M2** — transcript tail/index, detail drawer, "focus tab" action (done).
-- **M3** — prompt-turn flow graph, in progress.
+- **M3** — prompt-turn flow graph, `GET /api/sessions/:id/flow` (done).
 - **Phase 2** — tmux relay (not started).
 
 Full spec and decisions: [`docs/ROADMAP.md`](docs/ROADMAP.md).
