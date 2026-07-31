@@ -19,11 +19,17 @@ describe("createApp", () => {
     await rm(projectsDir, { recursive: true, force: true });
   });
 
-  it("GET /api/health returns ok", async () => {
+  it("GET /api/health returns ok plus the server's home dir", async () => {
     const app = createApp({ sessionsDir, projectsDir }, new GitInfoCache());
     const res = await app.request("/api/health");
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ ok: true });
+    const body = (await res.json()) as { ok: boolean; home: string };
+    expect(body.ok).toBe(true);
+    // The web client uses this to render "~/…/project" instead of the full
+    // absolute path; just assert it's a non-empty absolute-looking string
+    // rather than asserting the operator's real home value.
+    expect(typeof body.home).toBe("string");
+    expect(body.home.length).toBeGreaterThan(0);
   });
 
   it("GET /api/sessions returns only alive sessions by default", async () => {

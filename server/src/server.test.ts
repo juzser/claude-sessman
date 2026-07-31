@@ -58,7 +58,9 @@ describe("startServer (integration)", () => {
 
   it("serves /api/health and /api/sessions over real HTTP", async () => {
     const healthRes = await fetch(`${baseUrl}/api/health`);
-    expect(await healthRes.json()).toEqual({ ok: true });
+    const healthBody = (await healthRes.json()) as { ok: boolean; home: string };
+    expect(healthBody.ok).toBe(true);
+    expect(typeof healthBody.home).toBe("string");
 
     const sessionsRes = await fetch(`${baseUrl}/api/sessions`);
     expect(await sessionsRes.json()).toEqual({ sessions: [] });

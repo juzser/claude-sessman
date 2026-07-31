@@ -1,3 +1,4 @@
+import os from "node:os";
 import { Hono } from "hono";
 import type { GitInfoCache } from "./git-info.js";
 import { getSessions, type SessionsServiceConfig } from "./sessions-service.js";
@@ -6,7 +7,9 @@ import { getSessions, type SessionsServiceConfig } from "./sessions-service.js";
 export function createApp(config: SessionsServiceConfig, gitCache: GitInfoCache): Hono {
   const app = new Hono();
 
-  app.get("/api/health", (c) => c.json({ ok: true }));
+  // The web client uses `home` to render "~/…/project" instead of the full
+  // absolute cwd; it has no other way to know the server machine's home dir.
+  app.get("/api/health", (c) => c.json({ ok: true, home: os.homedir() }));
 
   app.get("/api/sessions", async (c) => {
     const includeDead = c.req.query("includeDead") === "1";
