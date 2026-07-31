@@ -532,4 +532,45 @@ describe("TranscriptIndexCache", () => {
       expect(flow?.turns).toHaveLength(1);
     });
   });
+
+  describe("aggregate usage and model breakdown (M4)", () => {
+    it("sums totalUsage across main-chain and sidechain assistant messages, and isolates subagentUsage to sidechain-only", async () => {
+      const lines = [
+        assistantLine("main chain reply", "2026-01-01T00:00:00.000Z"),
+        assistantLine("sidechain reply", "2026-01-01T00:00:01.000Z", {
+          isSidechain: true,
+          message: {
+            role: "assistant",
+            model: "synthetic-model-1",
+            content: [{ type: "text", text: "sidechain reply" }],
+            usage: {
+              input_tokens: 1,
+              output_tokens: 2,
+              cache_read_input_tokens: 3,
+              cache_creation_input_tokens: 4,
+            },
+          },
+        }),
+      ];
+      await writeFile(transcriptPath, lines.map((l) => `${l}\n`).join(""));
+
+      const cache = new TranscriptIndexCache();
+      await cache.refreshAndWait(sessionId, transcriptPath);
+      const summary = cache.getSummary(sessionId, transcriptPath);
+
+      // Note: no contextTokens field here — it's a per-message context-window size, not additive.
+      expect(summary?.totalUsage).toEqual({
+        inputTokens: 11,
+        outputTokens: 22,
+        cacheReadTokens: 33,
+        cacheCreationTokens: 44,
+      });
+      expect(summary?.subagentUsage).toEqual({
+        inputTokens: 1,
+        outputTokens: 2,
+        cacheReadTokens: 3,
+        cacheCreationTokens: 4,
+      });
+    });
+  });
 });
