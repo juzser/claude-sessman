@@ -26,6 +26,12 @@ const MAX_FLOW_TURNS = 100;
 const MAX_TOOL_CALLS_PER_TURN = 40;
 /** Tool-call target strings (file paths, patterns, commands) are truncated to this length. */
 const MAX_TOOL_TARGET_LENGTH = 120;
+/** Caps how many unresolved Agent/Task dispatches are retained as "currently running" so a stuck/never-returning dispatch can't balloon state. */
+const MAX_RUNNING_SUBAGENTS = 20;
+/** Tool names that dispatch a subagent — matched against tool_use.name for the "currently running" heuristic. */
+const SUBAGENT_DISPATCH_TOOL_NAMES = new Set(["Task", "Agent"]);
+/** Anchored, case-insensitive prefix match for the auto-generated post-compaction preamble — not a loose substring match. */
+const CONTINUATION_PREFIX = /^this session is being continued from a previous conversation that ran out of context/i;
 
 export interface TruncatedText {
   text: string;
@@ -51,6 +57,60 @@ export interface ToolCall {
   target: string | null;
 }
 
+/**
+ * A real sum of token usage across one or more assistant messages. Deliberately
+ * has no `contextTokens` field — unlike TokenUsage's per-message contextTokens
+ * (a context-window size), a sum of context-window sizes across messages isn't
+ * a meaningful number, so it's omitted rather than mis-summed.
+ */
+export interface SummedUsage {
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheCreationTokens: number;
+}
+
+/** Per-model token totals and call count. Sum of all entries equals `totalUsage`. */
+export interface ModelUsage {
+  model: string;
+  calls: number;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheCreationTokens: number;
+}
+
+/** An Agent/Task dispatch seen as a tool_use block in the main chain, not yet matched to a tool_result. */
+export interface RunningSubagent {
+  toolUseId: string;
+  /** input.description of the dispatching tool_use block, if present as a string. */
+  description: string | null;
+  /** input.subagent_type of the dispatching tool_use block, if present as a string. */
+  subagentType: string | null;
+  /** Timestamp of the dispatching tool_use line. */
+  startedAt: string | null;
+}
+
+export interface SubagentSummary {
+  /**
+   * Count of `isSidechain: true` lines seen anywhere in the transcript (any
+   * entry type). On this CLI version, subagent conversation content is
+   * usually stored in separate `subagents/agent-<id>.jsonl` files rather than
+   * inline sidechain lines, so this is frequently 0 even while subagents ran —
+   * see docs/DATA-CONTRACT.md for the caveat.
+   */
+  sidechainLineCount: number;
+  /** Timestamp of the most recent isSidechain:true line seen, if any. */
+  lastSidechainAt: string | null;
+  /**
+   * Agent/Task tool_use dispatches from the main chain with no matching
+   * tool_result yet, most recent first (capped at MAX_RUNNING_SUBAGENTS) —
+   * the "currently running" heuristic. See docs/DATA-CONTRACT.md for its
+   * failure mode.
+   */
+  running: RunningSubagent[];
+}
+
 export interface TranscriptTurn {
   /** Position of this turn across the whole transcript (not reset by the ring buffer). */
   index: number;
@@ -66,6 +126,8 @@ export interface TranscriptTurn {
   toolCallsOmitted: number;
   /** Deduped, insertion-ordered list of file-tool targets touched in this turn. */
   filesTouched: string[];
+  /** True when this turn's prompt is the post-compaction continuation preamble. */
+  continuation: boolean;
 }
 
 export interface TranscriptSummary {
@@ -82,6 +144,13 @@ export interface TranscriptSummary {
   /** Whether the index has scanned this transcript from byte 0 at least once. */
   complete: boolean;
   recentTurns: TranscriptTurn[];
+  /** Sum of every assistant message's usage, main chain + sidechain. Null until at least one assistant usage is seen. */
+  totalUsage: SummedUsage | null;
+  /** Sum of sidechain-only assistant messages' usage. Null until at least one sidechain assistant usage is seen. */
+  subagentUsage: SummedUsage | null;
+  /** Per-model call counts and token totals, main chain + sidechain, sorted by calls desc then model name asc. */
+  modelBreakdown: ModelUsage[];
+  subagents: SubagentSummary;
 }
 
 /** Payload for the flow view: every retained turn (up to MAX_FLOW_TURNS), oldest first. */
@@ -111,6 +180,21 @@ interface MutableTurn {
   toolCallsOmitted: number;
   /** Insertion-ordered set of file-tool targets seen so far in this turn (Set preserves insertion order). */
   fileTargets: Set<string>;
+  continuation: boolean;
+}
+
+/**
+ * Per-`message.id` dedup state for {@link applyAggregateAssistantEntry}. Real
+ * transcripts write one logical assistant message as multiple JSONL lines
+ * (one per content block: thinking/text/tool_use), each carrying an
+ * identical copy of `message.usage` — without this, summing per-line
+ * inflates totals ~2x. See docs/DATA-CONTRACT.md.
+ */
+interface AssistantMessageDedup {
+  /** Whether modelBreakdown[].calls has already counted this message.id (counts messages, not lines). */
+  callCounted: boolean;
+  /** Whether a non-zero usage has already been folded for this message.id — a later all-zero line then contributes nothing further. */
+  usageFinalized: boolean;
 }
 
 interface IndexState {
@@ -128,6 +212,18 @@ interface IndexState {
   toolCallsTotal: number;
   lastEntryAt: string | null;
   recentTurns: MutableTurn[];
+  /** Sum of every assistant message's usage, main chain + sidechain. */
+  totalUsage: SummedUsage | null;
+  /** Sum of sidechain-only assistant messages' usage. */
+  subagentUsage: SummedUsage | null;
+  /** Per-model totals, keyed by model name, insertion order not significant (re-sorted at read time). */
+  modelUsage: Map<string, ModelUsage>;
+  sidechainLineCount: number;
+  lastSidechainAt: string | null;
+  /** Unresolved Agent/Task dispatches, keyed by their tool_use id, insertion-ordered (Map preserves it). */
+  pendingSubagents: Map<string, RunningSubagent>;
+  /** Dedup state keyed by assistant `message.id`, so a multi-line message is folded into the aggregates once, not once per line. Grows unboundedly for the life of the process (no eviction) — acceptable, see docs/DATA-CONTRACT.md. */
+  assistantMessageDedup: Map<string, AssistantMessageDedup>;
 }
 
 interface CacheEntry {
@@ -155,6 +251,13 @@ function emptyState(): IndexState {
     toolCallsTotal: 0,
     lastEntryAt: null,
     recentTurns: [],
+    totalUsage: null,
+    subagentUsage: null,
+    modelUsage: new Map(),
+    sidechainLineCount: 0,
+    lastSidechainAt: null,
+    pendingSubagents: new Map(),
+    assistantMessageDedup: new Map(),
   };
 }
 
@@ -215,6 +318,167 @@ function pushTurn(state: IndexState, turn: MutableTurn): void {
   }
 }
 
+function emptySummedUsage(): SummedUsage {
+  return { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0 };
+}
+
+function addUsage(target: SummedUsage, usage: TokenUsage): void {
+  target.inputTokens += usage.inputTokens;
+  target.outputTokens += usage.outputTokens;
+  target.cacheReadTokens += usage.cacheReadTokens;
+  target.cacheCreationTokens += usage.cacheCreationTokens;
+}
+
+/** True when every one of a TokenUsage's four fields is 0 (as opposed to a real, non-zero snapshot). */
+function isZeroUsage(usage: TokenUsage): boolean {
+  return (
+    usage.inputTokens === 0 &&
+    usage.outputTokens === 0 &&
+    usage.cacheReadTokens === 0 &&
+    usage.cacheCreationTokens === 0
+  );
+}
+
+/** Adds `usage` into totalUsage (and subagentUsage, if sidechain) — the shared tail of folding one message's usage exactly once. */
+function foldUsageTotals(state: IndexState, usage: TokenUsage, isSidechain: boolean): void {
+  if (!state.totalUsage) state.totalUsage = emptySummedUsage();
+  addUsage(state.totalUsage, usage);
+  if (isSidechain) {
+    if (!state.subagentUsage) state.subagentUsage = emptySummedUsage();
+    addUsage(state.subagentUsage, usage);
+  }
+}
+
+/** Adds one message's usage (if any) into `model`'s modelBreakdown entry, optionally counting it as a call. */
+function foldModelUsage(state: IndexState, model: string, usage: TokenUsage | null, countCall: boolean): void {
+  let entry = state.modelUsage.get(model);
+  if (!entry) {
+    entry = { model, calls: 0, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0 };
+    state.modelUsage.set(model, entry);
+  }
+  if (countCall) entry.calls += 1;
+  if (usage) {
+    entry.inputTokens += usage.inputTokens;
+    entry.outputTokens += usage.outputTokens;
+    entry.cacheReadTokens += usage.cacheReadTokens;
+    entry.cacheCreationTokens += usage.cacheCreationTokens;
+  }
+}
+
+/**
+ * Folds one assistant message's model+usage into the running totals —
+ * totalUsage, subagentUsage (sidechain-only) and modelBreakdown. Runs for
+ * BOTH main-chain and sidechain assistant messages: these are the only
+ * fields sidechain lines are allowed to affect (see applyEntry). Never
+ * throws; a message missing usage or model contributes to whichever of the
+ * two it does have.
+ *
+ * A real transcript writes one logical assistant message as multiple JSONL
+ * lines (one per content block — thinking/text/tool_use), each line carrying
+ * an IDENTICAL copy of `message.usage` (a running total, not a delta). Naively
+ * folding every line inflates totalUsage/subagentUsage/modelBreakdown by
+ * however many lines the message was split across (~2x observed on real
+ * transcripts). So this dedups by `message.id`, folding each distinct id's
+ * usage+call at most once:
+ *  - First line seen for an id: count the call (if it names a model) and fold
+ *    whatever usage it carries, even if zero/absent.
+ *  - A later line for the SAME id is skipped once a non-zero usage has been
+ *    folded for it — including after an intervening tool_result line;
+ *    contiguity is irrelevant, only the id matters.
+ *  - Exception: if the first line(s) for an id carried only an all-zero (or
+ *    missing) usage, a later line with a real, non-zero usage for that same
+ *    id still gets folded (the call was already counted, so it doesn't
+ *    double-count `calls` — only the usage totals pick up the real value).
+ *  - `message.id` missing or non-string: falls back to the pre-dedup,
+ *    per-line behaviour (rare).
+ */
+function applyAggregateAssistantEntry(state: IndexState, message: Record<string, unknown>, isSidechain: boolean): void {
+  const usage = readUsage(message.usage);
+  const model = typeof message.model === "string" ? message.model : null;
+  const messageId = typeof message.id === "string" ? message.id : null;
+
+  if (messageId === null) {
+    if (usage) foldUsageTotals(state, usage, isSidechain);
+    if (model) foldModelUsage(state, model, usage, true);
+    return;
+  }
+
+  let dedup = state.assistantMessageDedup.get(messageId);
+  if (!dedup) {
+    dedup = { callCounted: false, usageFinalized: false };
+    state.assistantMessageDedup.set(messageId, dedup);
+  }
+
+  // Count the call at most once per message id — whichever content-block
+  // line for this id is the first to name a model — no matter how many lines
+  // (thinking/text/tool_use) the logical message was split across.
+  const isFirstCallForId = model !== null && !dedup.callCounted;
+  if (isFirstCallForId) dedup.callCounted = true;
+
+  // Every line for the same logical message repeats an identical usage
+  // snapshot (never a delta), so fold it at most once per id — except a
+  // later non-zero usage still wins over an earlier all-zero/missing one
+  // seen for the same id (rare, but seen in the wild).
+  const shouldFoldUsage = usage !== null && !dedup.usageFinalized;
+  if (shouldFoldUsage) {
+    foldUsageTotals(state, usage, isSidechain);
+    if (!isZeroUsage(usage)) dedup.usageFinalized = true;
+  }
+
+  if (model && (shouldFoldUsage || isFirstCallForId)) {
+    foldModelUsage(state, model, shouldFoldUsage ? usage : null, isFirstCallForId);
+  }
+}
+
+/** Sorted by calls desc, then model name asc — a stable, deterministic ordering for display. */
+function buildModelBreakdown(modelUsage: Map<string, ModelUsage>): ModelUsage[] {
+  return [...modelUsage.values()]
+    .map((entry) => ({ ...entry }))
+    .sort((a, b) => b.calls - a.calls || a.model.localeCompare(b.model));
+}
+
+/** Anchored, case-insensitive prefix match — a turn merely quoting the phrase mid-prompt does not match. */
+function isContinuationPrompt(promptText: string): boolean {
+  return CONTINUATION_PREFIX.test(promptText);
+}
+
+/**
+ * Registers an Agent/Task tool_use block as a "currently running" subagent
+ * dispatch until a matching tool_result appears. Ignores tool_use blocks
+ * without a string `id` (can't be matched later) and caps the pending set at
+ * MAX_RUNNING_SUBAGENTS, evicting the oldest unresolved dispatch first, so a
+ * transcript full of never-resolved dispatches can't grow state unbounded.
+ */
+function registerSubagentLaunch(state: IndexState, block: Record<string, unknown>, timestamp: string | null): void {
+  if (typeof block.name !== "string" || !SUBAGENT_DISPATCH_TOOL_NAMES.has(block.name)) return;
+  if (typeof block.id !== "string") return;
+
+  const input = isRecord(block.input) ? block.input : {};
+  state.pendingSubagents.set(block.id, {
+    toolUseId: block.id,
+    description: typeof input.description === "string" ? input.description : null,
+    subagentType: typeof input.subagent_type === "string" ? input.subagent_type : null,
+    startedAt: timestamp,
+  });
+
+  while (state.pendingSubagents.size > MAX_RUNNING_SUBAGENTS) {
+    const oldestKey = state.pendingSubagents.keys().next().value;
+    if (oldestKey === undefined) break;
+    state.pendingSubagents.delete(oldestKey);
+  }
+}
+
+/** Resolves any pending subagent launches whose tool_use id is matched by a tool_result block in this (main-chain) user message. */
+function resolvePendingSubagentLaunches(state: IndexState, content: unknown): void {
+  if (state.pendingSubagents.size === 0 || !Array.isArray(content)) return;
+  for (const block of content) {
+    if (!isRecord(block)) continue;
+    if (block.type === "tool_result" && typeof block.tool_use_id === "string") {
+      state.pendingSubagents.delete(block.tool_use_id);
+    }
+  }
+}
+
 interface ExtractedTarget {
   target: string | null;
   /** True when the target came from a file-identifying field (file_path/notebook_path). */
@@ -241,12 +505,29 @@ function applyEntry(state: IndexState, entry: Record<string, unknown>): void {
   if (timestamp) state.lastEntryAt = timestamp;
 
   const isSidechain = entry.isSidechain === true;
-  if (isSidechain) return;
+
+  // Aggregate usage/model totals observe BOTH main-chain and sidechain assistant
+  // messages — the one place sidechain content is allowed to affect the summary.
+  if (entry.type === "assistant") {
+    const message = entry.message;
+    if (isRecord(message)) applyAggregateAssistantEntry(state, message, isSidechain);
+  }
+
+  if (isSidechain) {
+    // Anonymous fallback signal (see SubagentSummary): everything else below this
+    // point is main-chain-only, exactly as before M4.
+    state.sidechainLineCount += 1;
+    if (timestamp) state.lastSidechainAt = timestamp;
+    return;
+  }
 
   if (entry.type === "user") {
     if (entry.isMeta === true) return;
     const message = entry.message;
     if (!isRecord(message)) return;
+
+    resolvePendingSubagentLaunches(state, message.content);
+
     const promptText = extractUserPromptText(message.content);
     if (promptText === null) return; // tool-result-only, image-only, or unrecognised shape
 
@@ -261,6 +542,7 @@ function applyEntry(state: IndexState, entry: Record<string, unknown>): void {
       toolCalls: [],
       toolCallsOmitted: 0,
       fileTargets: new Set(),
+      continuation: isContinuationPrompt(promptText),
     });
     return;
   }
@@ -288,6 +570,7 @@ function applyEntry(state: IndexState, entry: Record<string, unknown>): void {
       } else if (block.type === "tool_use" && typeof block.name === "string") {
         state.toolCounts[block.name] = (state.toolCounts[block.name] ?? 0) + 1;
         state.toolCallsTotal += 1;
+        registerSubagentLaunch(state, block, timestamp);
         if (currentTurn) {
           if (currentTurn.toolCalls.length < MAX_TOOL_CALLS_PER_TURN) {
             const extracted = extractToolTarget(block.input);
@@ -396,6 +679,16 @@ function turnToSummary(turn: MutableTurn, limit: number): TranscriptTurn {
     toolCalls: turn.toolCalls.map((call) => ({ ...call })),
     toolCallsOmitted: turn.toolCallsOmitted,
     filesTouched: [...turn.fileTargets],
+    continuation: turn.continuation,
+  };
+}
+
+function toSubagentSummary(state: IndexState): SubagentSummary {
+  return {
+    sidechainLineCount: state.sidechainLineCount,
+    lastSidechainAt: state.lastSidechainAt,
+    // Newest-launched first: pendingSubagents is insertion-ordered oldest-first.
+    running: [...state.pendingSubagents.values()].reverse(),
   };
 }
 
@@ -415,6 +708,10 @@ function toSummary(state: IndexState, textLimit: number): TranscriptSummary {
     // even though the underlying ring buffer (state.recentTurns) now holds up to
     // MAX_FLOW_TURNS for the flow view — see toFlowSummary below.
     recentTurns: state.recentTurns.slice(-MAX_RECENT_TURNS).map((turn) => turnToSummary(turn, SUMMARY_TEXT_LIMIT)),
+    totalUsage: state.totalUsage ? { ...state.totalUsage } : null,
+    subagentUsage: state.subagentUsage ? { ...state.subagentUsage } : null,
+    modelBreakdown: buildModelBreakdown(state.modelUsage),
+    subagents: toSubagentSummary(state),
   };
 }
 

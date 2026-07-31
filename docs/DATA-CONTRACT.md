@@ -79,10 +79,10 @@ turn or a gist.
 
 | Shape | Recognized as | Effect |
 |---|---|---|
-| `isSidechain: true` (any `type`) | excluded | only the `lastEntryAt` update above applies; no turn, gist, usage, or tool count |
+| `isSidechain: true` (any `type`) | excluded from the main-chain summary | only the `lastEntryAt` update above applies to the pre-existing fields — no turn, gist, `toolCounts`/`toolCallsTotal`, or snapshot `model`/`usage` change. **Since M4**, a sidechain `assistant` line is the one exception: its `model`+`usage` still feed the new aggregate-only fields below (`totalUsage`, `subagentUsage`, `modelBreakdown`), and the line itself is counted toward `subagents.sidechainLineCount`/`subagents.lastSidechainAt`. Nothing about the pre-M4 fields changed. |
 | `type: "user"`, `isMeta: true` | excluded | skipped entirely (checked after the sidechain check) |
-| `type: "user"`, `message.content` is a `string` (empty included — the code does not special-case `""`), or an array with ≥1 `{type:"text", text:string}` block | new turn | increments `turnCount`; opens a new entry in `recentTurns` with this text as `prompt` and `at: timestamp` |
-| `type: "user"`, content is tool-result-only, image-only, or otherwise has no text | not a turn | no-op beyond the `lastEntryAt` update |
+| `type: "user"`, `message.content` is a `string` (empty included — the code does not special-case `""`), or an array with ≥1 `{type:"text", text:string}` block | new turn | increments `turnCount`; opens a new entry in `recentTurns` with this text as `prompt` and `at: timestamp`; also sets the turn's `continuation` flag (see below) |
+| `type: "user"`, content is tool-result-only, image-only, or otherwise has no text | not a turn | no-op beyond the `lastEntryAt` update, **except**: a `tool_result` block whose `tool_use_id` matches a pending Agent/Task dispatch (see "Subagent visibility" below) resolves that dispatch out of `subagents.running` |
 | `type: "assistant"`, `message.content` is an array | updates current turn | does **not** open a new turn — attaches to the most-recently-opened one (see below) |
 | any other `type` (`"system"`, attachment/agent-name/custom-title lines, …) | ignored | not part of the summary |
 
@@ -97,8 +97,10 @@ regardless of how many assistant lines follow it.
 `message.model` (if a string) and `message.usage` (if present) are also
 applied on every assistant line, independent of the *turn* logic — they land
 even when no turn is open. They are **not** independent of the sidechain
-check: that check returns early, so a sidechain assistant line updates
-neither, per the table above.
+check: that check returns early for these two *snapshot* fields, so a
+sidechain assistant line updates neither `model` nor `usage`, per the table
+above — but (since M4) it does still feed `totalUsage`/`subagentUsage`/
+`modelBreakdown`, which run before the sidechain early-return.
 
 ### Per-turn tool calls: cap, `toolCallsOmitted`, and target extraction
 
@@ -145,6 +147,144 @@ cacheReadTokens      // usage.cache_read_input_tokens
 cacheCreationTokens  // usage.cache_creation_input_tokens
 contextTokens        // inputTokens + cacheReadTokens + cacheCreationTokens
 ```
+
+### Usage/model aggregates, subagent visibility, continuation (M4)
+
+Added in M4 to feed the dashboard's right-hand panel (total usage, per-model
+breakdown, running subagents). All four are **additive**: `TranscriptSummary.model`
+and `.usage` are unchanged and keep behaving as a last-*main-chain*-message
+snapshot (`SessionCard.vue` renders `.usage` as `ctx`) — they are not totals,
+and this PR does not touch what feeds them.
+
+**`totalUsage: SummedUsage | null`** / **`subagentUsage: SummedUsage | null`** —
+real sums (not snapshots), folded **once per distinct assistant `message.id`**,
+not once per JSONL line. A real transcript writes one logical assistant
+message as multiple JSONL lines — one per content block (`thinking`, then
+`text`, then `tool_use`) — and every line belonging to that message repeats
+an identical `message.usage` object: it is a running total *for the whole
+message*, never a per-line delta. Folding it once per line therefore
+inflated `totalUsage`/`subagentUsage`/`modelBreakdown` by however many lines
+the message happened to be split across. The scanner instead folds each
+distinct `message.id`'s usage at most once — except that an earlier all-zero
+(or missing) usage does not "close" the id, so a later line for the same id
+carrying a real, non-zero usage still gets folded in. When `message.id` is
+missing or not a string (rare), the line falls back to the pre-dedup,
+per-line behaviour. `totalUsage` sums main-chain **and** sidechain assistant
+messages; `subagentUsage` sums sidechain-only. Main-chain-only usage is
+`totalUsage` minus `subagentUsage` field-by-field (there is no separate third
+field for it). Both are `null` until at least one qualifying assistant usage
+has been seen — this distinguishes "zero tokens seen" from "no usage-bearing
+message parsed yet" the same way `TranscriptSummary.usage` already does.
+
+Note: `message.usage.iterations` is present on nearly every assistant line,
+but it is always length 1 and identical to that message's top-level usage
+fields — it is **not** a per-call/per-line breakdown, and must not be used to
+attribute usage within a multi-line message.
+
+This dedup state (`message.id` → whether its call/usage has been counted) is
+kept in memory for the life of the indexed file and never evicted — on the
+order of a thousand distinct assistant message ids for a large real
+transcript, each a small fixed-size entry. It must live on `IndexState` rather
+than inside a single parse run: the indexer is incremental, the poll interval
+is short, and a writer emits one line per content block, so a multi-line
+message routinely straddles a poll boundary and its later lines are parsed
+with the earlier ones' state already committed. Scoping the map to one parse
+run would silently restore the per-line double count.
+
+Bounding it, honestly: that "thousand entries" figure is per transcript, and
+`TranscriptIndexCache` holds one `IndexState` per `sessionId` it has ever been
+asked about — including dead sessions, since callers pass `includeDead: true`
+— and never evicts an entry. So the real ceiling is a thousand entries times
+however many sessions the process has seen since it started, not a thousand
+overall. Every other field on `IndexState` is either O(1) or explicitly capped
+(`recentTurns` by `MAX_FLOW_TURNS`, `pendingSubagents` by
+`MAX_RUNNING_SUBAGENTS`); this is the first that grows with transcript length,
+so it makes the missing session-level eviction matter in a way it did not
+before. The session cache's unbounded growth is pre-existing and out of scope
+here; capping it (the `MAX_RUNNING_SUBAGENTS` eviction is a usable template)
+is the fix, not capping this map.
+
+`SummedUsage` intentionally has **no `contextTokens` field**, unlike
+`TokenUsage`. `contextTokens` is `input + cacheRead + cacheCreation` *of one
+message* — the size of that message's context window — and summing that
+number across many messages does not produce a meaningful quantity (a
+100-turn session's `contextTokens` don't add up to "200k tokens of context";
+each message's context window mostly re-reads the same prior tokens). So the
+summed types simply omit it rather than compute a number that would look
+plausible but mean nothing.
+
+**`modelBreakdown: ModelUsage[]`** — one entry per distinct `message.model`
+string seen (main chain **and** sidechain), each `{ model, calls, inputTokens,
+outputTokens, cacheReadTokens, cacheCreationTokens }`. Sorted by `calls`
+descending, then `model` ascending as a tiebreak, for a stable render order.
+`calls` counts distinct assistant **messages**, deduped by `message.id` using
+the same rule as `totalUsage` above — a message split across several lines
+increments `calls` once, not once per line. Summing every entry's four token
+fields across the whole array equals `totalUsage` **only when every
+usage-bearing message named a model**: an assistant message carrying usage
+but no string `model` is folded into `totalUsage` and has no `modelBreakdown`
+entry to attribute to, so the array sums to `totalUsage` minus that usage.
+Do not treat the two as an invariant a consumer can assert on. In the other
+direction, a message with a string `model` but no usable `usage` still
+increments that model's `calls` (it happened), contributing `0` to all four
+token fields.
+
+**`subagents: SubagentSummary`** — `{ sidechainLineCount, lastSidechainAt,
+running }`:
+
+- `sidechainLineCount` / `lastSidechainAt`: count and latest timestamp of
+  every `isSidechain: true` line of **any** `type` seen in this transcript.
+  This is the literal "at minimum a count of sidechain lines + timestamp of
+  the most recent one" signal, kept intentionally anonymous — it carries no
+  identity, only a number and a time.
+- `running: RunningSubagent[]` — the actually useful signal, and a
+  **heuristic**: every `tool_use` block in the *main chain* named `"Task"` or
+  `"Agent"` with a string `id` is treated as a subagent dispatch and kept in
+  `running` (newest first, capped at 20) until a `tool_result` block with a
+  matching `tool_use_id` appears later in the same file, at which point it's
+  removed. Each entry is
+  `{ toolUseId, description, subagentType, startedAt }`, where `description`/
+  `subagentType` come from the dispatching block's `input.description` /
+  `input.subagent_type` (`null` if not a string) and `startedAt` is that
+  line's `timestamp`.
+
+  **Failure modes of this heuristic** — read before trusting "N subagents
+  running":
+  1. **A dispatch that never gets a `tool_result` in this transcript** (the
+     process died, the transcript was truncated, or the result genuinely
+     never arrived) stays in `running` forever, capped at 20 entries — after
+     that, the oldest unresolved dispatch is silently evicted to bound memory,
+     so a sufficiently long-running/misbehaving session can under-report.
+  2. **The dispatching tool is not named exactly `"Task"` or `"Agent"`.** This
+     scanner only recognizes those two names; a differently-named or
+     custom-framework dispatch tool (observed on at least one real machine
+     during this task's investigation) is invisible to this heuristic.
+  3. **Real subagent conversation content on current Claude Code CLI builds
+     is not stored inline as `isSidechain: true` lines in the main
+     transcript.** Empirically (checked against real transcripts during this
+     task, not assumed), it lives in separate
+     `<projectSlug>/<sessionId>/subagents/agent-<agentId>.jsonl` files
+     (paired with `agent-<agentId>.meta.json` carrying `agentType`,
+     `description`, `spawnDepth`, `toolUseId`), which this single-file
+     scanner does not read. In practice this means `sidechainLineCount` is
+     frequently `0` even on a transcript with real subagent activity, and
+     `running` (derived from the main-chain dispatch/result pairing instead)
+     is the only signal in this file that reliably reflects real subagent
+     activity today. Reading the external `subagents/` directory to recover
+     the sidechain-content-based signal for real, and/or to attribute
+     `subagentUsage`/`modelBreakdown` entries to actual per-subagent token
+     spend, is out of scope for this change and is a natural follow-up task.
+
+**`TranscriptTurn.continuation: boolean`** — `true` when the turn's prompt
+text matches, as an anchored (`^`), case-insensitive prefix (not a substring
+search anywhere in the prompt), the auto-generated post-compaction preamble
+"This session is being continued from a previous conversation that ran out
+of context...". These turns are **flagged, never dropped**: `turnCount` and
+every turn's `index` are unaffected, because `index` is transcript-global and
+monotonic and doubles as a cache key elsewhere in the codebase — dropping a
+turn would shift every later turn's `index`. A prompt that merely quotes or
+references the phrase later in its text (not as its own prefix) is not
+flagged.
 
 Text captured for `prompt`/`gist` collapses whitespace and is capped at
 2000 chars internally (`MAX_CAPTURE_LENGTH`); display-time truncation is a

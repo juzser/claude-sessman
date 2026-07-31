@@ -219,3 +219,21 @@ omitted — the client never needs an `in`/`hasOwnProperty` check:
 | `transcriptSummary` | no scan of this transcript has completed yet (first poll tick still in flight) — **not** the same as an empty transcript, which produces a real summary with `turnCount: 0` |
 | `git` | `cwd` is not inside a git repo, `git` isn't installed, or any other git failure |
 | `pidReuse: "unknown"` (not `null` — it's a 3-value enum, not nullable) | `procStart` or the live `ps lstart` value is missing/unparseable, so reuse can't be checked either way |
+
+## `TranscriptSummary` usage/model/subagent aggregates (M4)
+
+`transcriptSummary` (both here and in `EnrichedSession`) also carries
+`totalUsage`, `subagentUsage`, `modelBreakdown`, and `subagents` — full
+shapes, null semantics, and the `running`-subagent heuristic's failure modes
+are documented in `docs/DATA-CONTRACT.md`, not repeated here. In short:
+`totalUsage`/`subagentUsage` are real running sums (`null` until any
+qualifying usage is seen), `modelBreakdown` is a `calls`-desc/`model`-asc
+sorted array that always sums to `totalUsage`, and `subagents.running` is a
+best-effort list of not-yet-resolved `Task`/`Agent` dispatches (identity
+recovered from the dispatch's own `tool_use` block, not invented).
+
+Each entry in `transcriptDetail.recentTurns`/`FlowSummary`'s turns also now
+carries `continuation: boolean` — `true` for a turn whose prompt is the
+auto-generated post-compaction preamble. These turns are flagged, not
+dropped, so `index` stays transcript-global and monotonic (see
+`docs/DATA-CONTRACT.md`).

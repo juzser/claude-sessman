@@ -15,16 +15,35 @@ function userPromptLine(text: string, timestamp: string, overrides: Record<strin
   });
 }
 
-function toolResultLine(timestamp: string): string {
+function toolResultLine(timestamp: string, toolUseId = "toolu_synthetic_1"): string {
   return JSON.stringify({
     type: "user",
     timestamp,
     isSidechain: false,
     message: {
       role: "user",
-      content: [{ type: "tool_result", tool_use_id: "toolu_synthetic_1", content: "synthetic tool output" }],
+      content: [{ type: "tool_result", tool_use_id: toolUseId, content: "synthetic tool output" }],
     },
     toolUseResult: { synthetic: true },
+  });
+}
+
+/** Builds an assistant line with a single Agent/Task tool_use dispatch block, carrying an `id` for later tool_result matching. */
+function assistantAgentDispatchLine(
+  toolUseId: string,
+  timestamp: string,
+  input: Record<string, unknown> = {},
+  toolName = "Task",
+): string {
+  return JSON.stringify({
+    type: "assistant",
+    timestamp,
+    isSidechain: false,
+    message: {
+      role: "assistant",
+      model: "synthetic-model-1",
+      content: [{ type: "tool_use", id: toolUseId, name: toolName, input }],
+    },
   });
 }
 
@@ -94,6 +113,37 @@ function assistantMultiToolUseLine(
       role: "assistant",
       model: "synthetic-model-1",
       content: toolUses.map((t) => ({ type: "tool_use", name: t.name, input: t.input ?? { synthetic: true } })),
+    },
+  });
+}
+
+/**
+ * Builds ONE JSONL line for a single content block of a multi-line assistant
+ * message — the shape a real transcript actually uses: one logical message
+ * split across several lines (thinking, then text, then tool_use), with
+ * EVERY line repeating the same `message.id` and an identical `message.usage`
+ * snapshot (a running total for the whole message, never a per-line delta).
+ * None of the helpers above ever repeat a `message.id`, which is exactly why
+ * the per-line-sum bug went undetected. Pass `messageId: null` to omit the
+ * id field entirely (exercising the pre-dedup fallback path).
+ */
+function assistantMessageBlockLine(
+  messageId: string | null,
+  block: Record<string, unknown>,
+  timestamp: string,
+  usage: Record<string, number> | null,
+  isSidechain = false,
+): string {
+  return JSON.stringify({
+    type: "assistant",
+    timestamp,
+    isSidechain,
+    message: {
+      ...(messageId !== null ? { id: messageId } : {}),
+      role: "assistant",
+      model: "synthetic-model-1",
+      content: [block],
+      ...(usage ? { usage } : {}),
     },
   });
 }
@@ -530,6 +580,465 @@ describe("TranscriptIndexCache", () => {
       expect(flow?.retainedTurnCount).toBe(1);
       expect(flow?.turnsDropped).toBe(false);
       expect(flow?.turns).toHaveLength(1);
+    });
+  });
+
+  describe("aggregate usage and model breakdown (M4)", () => {
+    it("sums totalUsage across main-chain and sidechain assistant messages, and isolates subagentUsage to sidechain-only", async () => {
+      const lines = [
+        assistantLine("main chain reply", "2026-01-01T00:00:00.000Z"),
+        assistantLine("sidechain reply", "2026-01-01T00:00:01.000Z", {
+          isSidechain: true,
+          message: {
+            role: "assistant",
+            model: "synthetic-model-1",
+            content: [{ type: "text", text: "sidechain reply" }],
+            usage: {
+              input_tokens: 1,
+              output_tokens: 2,
+              cache_read_input_tokens: 3,
+              cache_creation_input_tokens: 4,
+            },
+          },
+        }),
+      ];
+      await writeFile(transcriptPath, lines.map((l) => `${l}\n`).join(""));
+
+      const cache = new TranscriptIndexCache();
+      await cache.refreshAndWait(sessionId, transcriptPath);
+      const summary = cache.getSummary(sessionId, transcriptPath);
+
+      // Note: no contextTokens field here — it's a per-message context-window size, not additive.
+      expect(summary?.totalUsage).toEqual({
+        inputTokens: 11,
+        outputTokens: 22,
+        cacheReadTokens: 33,
+        cacheCreationTokens: 44,
+      });
+      expect(summary?.subagentUsage).toEqual({
+        inputTokens: 1,
+        outputTokens: 2,
+        cacheReadTokens: 3,
+        cacheCreationTokens: 4,
+      });
+    });
+
+    it("builds modelBreakdown sorted by calls desc then model name asc, summing to totalUsage", async () => {
+      const lines = [
+        assistantLine("reply from model b, call 1", "2026-01-01T00:00:00.000Z", {
+          message: {
+            role: "assistant",
+            model: "synthetic-model-b",
+            content: [{ type: "text", text: "reply from model b, call 1" }],
+            usage: { input_tokens: 1, output_tokens: 1, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
+          },
+        }),
+        assistantLine("reply from model a, call 1", "2026-01-01T00:00:01.000Z", {
+          message: {
+            role: "assistant",
+            model: "synthetic-model-a",
+            content: [{ type: "text", text: "reply from model a, call 1" }],
+            usage: { input_tokens: 2, output_tokens: 2, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
+          },
+        }),
+        assistantLine("reply from model a, call 2", "2026-01-01T00:00:02.000Z", {
+          message: {
+            role: "assistant",
+            model: "synthetic-model-a",
+            content: [{ type: "text", text: "reply from model a, call 2" }],
+            usage: { input_tokens: 3, output_tokens: 3, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
+          },
+        }),
+      ];
+      await writeFile(transcriptPath, lines.map((l) => `${l}\n`).join(""));
+
+      const cache = new TranscriptIndexCache();
+      await cache.refreshAndWait(sessionId, transcriptPath);
+      const summary = cache.getSummary(sessionId, transcriptPath);
+
+      // model-a has 2 calls (more than model-b's 1), so it sorts first despite "a" < "b" being moot here;
+      // a tie on calls would fall back to name asc — exercised implicitly since there's no tie in this fixture.
+      expect(summary?.modelBreakdown).toEqual([
+        { model: "synthetic-model-a", calls: 2, inputTokens: 5, outputTokens: 5, cacheReadTokens: 0, cacheCreationTokens: 0 },
+        { model: "synthetic-model-b", calls: 1, inputTokens: 1, outputTokens: 1, cacheReadTokens: 0, cacheCreationTokens: 0 },
+      ]);
+
+      const summed = summary!.modelBreakdown.reduce(
+        (acc, m) => ({
+          inputTokens: acc.inputTokens + m.inputTokens,
+          outputTokens: acc.outputTokens + m.outputTokens,
+          cacheReadTokens: acc.cacheReadTokens + m.cacheReadTokens,
+          cacheCreationTokens: acc.cacheCreationTokens + m.cacheCreationTokens,
+        }),
+        { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0 },
+      );
+      expect(summed).toEqual(summary?.totalUsage);
+    });
+
+    it("breaks a calls tie by model name ascending", async () => {
+      const lines = [
+        assistantLine("reply", "2026-01-01T00:00:00.000Z", {
+          message: {
+            role: "assistant",
+            model: "synthetic-model-z",
+            content: [{ type: "text", text: "reply" }],
+            usage: { input_tokens: 1, output_tokens: 1, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
+          },
+        }),
+        assistantLine("reply", "2026-01-01T00:00:01.000Z", {
+          message: {
+            role: "assistant",
+            model: "synthetic-model-a",
+            content: [{ type: "text", text: "reply" }],
+            usage: { input_tokens: 1, output_tokens: 1, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
+          },
+        }),
+      ];
+      await writeFile(transcriptPath, lines.map((l) => `${l}\n`).join(""));
+
+      const cache = new TranscriptIndexCache();
+      await cache.refreshAndWait(sessionId, transcriptPath);
+      const summary = cache.getSummary(sessionId, transcriptPath);
+
+      expect(summary?.modelBreakdown.map((m) => m.model)).toEqual(["synthetic-model-a", "synthetic-model-z"]);
+    });
+
+    it("counts a usage-but-no-model line into totalUsage only, and a model-but-no-usage line into modelBreakdown with zero tokens", async () => {
+      const lines = [
+        // usage present, model absent (not a string)
+        assistantLine("no model here", "2026-01-01T00:00:00.000Z", {
+          message: {
+            role: "assistant",
+            content: [{ type: "text", text: "no model here" }],
+            usage: { input_tokens: 7, output_tokens: 8, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
+          },
+        }),
+        // model present, usage absent
+        assistantLine("no usage here", "2026-01-01T00:00:01.000Z", {
+          message: {
+            role: "assistant",
+            model: "synthetic-model-c",
+            content: [{ type: "text", text: "no usage here" }],
+          },
+        }),
+      ];
+      await writeFile(transcriptPath, lines.map((l) => `${l}\n`).join(""));
+
+      const cache = new TranscriptIndexCache();
+      await cache.refreshAndWait(sessionId, transcriptPath);
+      const summary = cache.getSummary(sessionId, transcriptPath);
+
+      expect(summary?.totalUsage).toEqual({ inputTokens: 7, outputTokens: 8, cacheReadTokens: 0, cacheCreationTokens: 0 });
+      expect(summary?.modelBreakdown).toEqual([
+        { model: "synthetic-model-c", calls: 1, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0 },
+      ]);
+    });
+
+    it("folds a multi-line assistant message (thinking, text, tool_use — same message.id) into totalUsage and modelBreakdown.calls exactly once", async () => {
+      const usage = { input_tokens: 10, output_tokens: 20, cache_read_input_tokens: 30, cache_creation_input_tokens: 40 };
+      const lines = [
+        assistantMessageBlockLine("msg_synthetic_a", { type: "thinking", thinking: "synthetic reasoning" }, "2026-01-01T00:00:00.000Z", usage),
+        assistantMessageBlockLine("msg_synthetic_a", { type: "text", text: "synthetic reply" }, "2026-01-01T00:00:01.000Z", usage),
+        assistantMessageBlockLine("msg_synthetic_a", { type: "tool_use", name: "synthetic-tool", input: { synthetic: true } }, "2026-01-01T00:00:02.000Z", usage),
+      ];
+      await writeFile(transcriptPath, lines.map((l) => `${l}\n`).join(""));
+
+      const cache = new TranscriptIndexCache();
+      await cache.refreshAndWait(sessionId, transcriptPath);
+      const summary = cache.getSummary(sessionId, transcriptPath);
+
+      expect(summary?.totalUsage).toEqual({ inputTokens: 10, outputTokens: 20, cacheReadTokens: 30, cacheCreationTokens: 40 });
+      expect(summary?.modelBreakdown).toEqual([
+        { model: "synthetic-model-1", calls: 1, inputTokens: 10, outputTokens: 20, cacheReadTokens: 30, cacheCreationTokens: 40 },
+      ]);
+    });
+
+    it("folds a message.id once even when its lines arrive across two separate polls", async () => {
+      // The common case in production, not an edge case: the poll interval is
+      // ~2s and a writer emits one line per content block as it goes, so a
+      // multi-line message routinely straddles a poll boundary. Deduping only
+      // works here because `assistantMessageDedup` lives on IndexState and is
+      // carried over by the incremental path; a Map local to one parse run
+      // would pass every other test in this file and double-count in real use.
+      const usage = { input_tokens: 10, output_tokens: 20, cache_read_input_tokens: 30, cache_creation_input_tokens: 40 };
+      const expectedUsage = { inputTokens: 10, outputTokens: 20, cacheReadTokens: 30, cacheCreationTokens: 40 };
+      const expectedBreakdown = [{ model: "synthetic-model-1", calls: 1, ...expectedUsage }];
+
+      const firstHalf = [
+        assistantMessageBlockLine("msg_synthetic_split", { type: "thinking", thinking: "synthetic reasoning" }, "2026-01-01T00:00:00.000Z", usage),
+        assistantMessageBlockLine("msg_synthetic_split", { type: "text", text: "synthetic reply" }, "2026-01-01T00:00:01.000Z", usage),
+      ];
+      await writeFile(transcriptPath, firstHalf.map((l) => `${l}\n`).join(""));
+
+      const cache = new TranscriptIndexCache();
+      await cache.refreshAndWait(sessionId, transcriptPath);
+      // Already folded once by the end of poll 1.
+      expect(cache.getSummary(sessionId, transcriptPath)?.totalUsage).toEqual(expectedUsage);
+      expect(cache.getSummary(sessionId, transcriptPath)?.modelBreakdown).toEqual(expectedBreakdown);
+
+      const rest = assistantMessageBlockLine(
+        "msg_synthetic_split",
+        { type: "tool_use", name: "synthetic-tool", input: { synthetic: true } },
+        "2026-01-01T00:00:02.000Z",
+        usage,
+      );
+      await appendFile(transcriptPath, `${rest}\n`);
+      await cache.refreshAndWait(sessionId, transcriptPath);
+
+      // Poll 2 sees the same id again and must contribute nothing.
+      const summary = cache.getSummary(sessionId, transcriptPath);
+      expect(summary?.totalUsage).toEqual(expectedUsage);
+      expect(summary?.modelBreakdown).toEqual(expectedBreakdown);
+    });
+
+    it("still folds a message.id once even when a tool_result line interrupts its content blocks (no contiguous-run shortcut)", async () => {
+      const usage = { input_tokens: 5, output_tokens: 6, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 };
+      const lines = [
+        assistantMessageBlockLine(
+          "msg_synthetic_b",
+          { type: "tool_use", id: "toolu_synthetic_b", name: "synthetic-tool", input: {} },
+          "2026-01-01T00:00:00.000Z",
+          usage,
+        ),
+        toolResultLine("2026-01-01T00:00:01.000Z", "toolu_synthetic_b"),
+        assistantMessageBlockLine("msg_synthetic_b", { type: "text", text: "synthetic follow-up" }, "2026-01-01T00:00:02.000Z", usage),
+      ];
+      await writeFile(transcriptPath, lines.map((l) => `${l}\n`).join(""));
+
+      const cache = new TranscriptIndexCache();
+      await cache.refreshAndWait(sessionId, transcriptPath);
+      const summary = cache.getSummary(sessionId, transcriptPath);
+
+      expect(summary?.totalUsage).toEqual({ inputTokens: 5, outputTokens: 6, cacheReadTokens: 0, cacheCreationTokens: 0 });
+      expect(summary?.modelBreakdown).toEqual([
+        { model: "synthetic-model-1", calls: 1, inputTokens: 5, outputTokens: 6, cacheReadTokens: 0, cacheCreationTokens: 0 },
+      ]);
+    });
+
+    it("lets a later real usage win over an earlier all-zero usage for the same message.id, without double-counting calls", async () => {
+      const zeroUsage = { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 };
+      const realUsage = { input_tokens: 15, output_tokens: 25, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 };
+      const lines = [
+        assistantMessageBlockLine("msg_synthetic_c", { type: "thinking", thinking: "synthetic reasoning" }, "2026-01-01T00:00:00.000Z", zeroUsage),
+        assistantMessageBlockLine("msg_synthetic_c", { type: "text", text: "synthetic reply" }, "2026-01-01T00:00:01.000Z", realUsage),
+      ];
+      await writeFile(transcriptPath, lines.map((l) => `${l}\n`).join(""));
+
+      const cache = new TranscriptIndexCache();
+      await cache.refreshAndWait(sessionId, transcriptPath);
+      const summary = cache.getSummary(sessionId, transcriptPath);
+
+      expect(summary?.totalUsage).toEqual({ inputTokens: 15, outputTokens: 25, cacheReadTokens: 0, cacheCreationTokens: 0 });
+      expect(summary?.modelBreakdown).toEqual([
+        { model: "synthetic-model-1", calls: 1, inputTokens: 15, outputTokens: 25, cacheReadTokens: 0, cacheCreationTokens: 0 },
+      ]);
+    });
+
+    it("folds a multi-line sidechain message once into both totalUsage and subagentUsage", async () => {
+      const usage = { input_tokens: 7, output_tokens: 8, cache_read_input_tokens: 9, cache_creation_input_tokens: 10 };
+      const lines = [
+        assistantMessageBlockLine("msg_synthetic_d", { type: "thinking", thinking: "synthetic sidechain reasoning" }, "2026-01-01T00:00:00.000Z", usage, true),
+        assistantMessageBlockLine("msg_synthetic_d", { type: "text", text: "synthetic sidechain reply" }, "2026-01-01T00:00:01.000Z", usage, true),
+      ];
+      await writeFile(transcriptPath, lines.map((l) => `${l}\n`).join(""));
+
+      const cache = new TranscriptIndexCache();
+      await cache.refreshAndWait(sessionId, transcriptPath);
+      const summary = cache.getSummary(sessionId, transcriptPath);
+
+      expect(summary?.totalUsage).toEqual({ inputTokens: 7, outputTokens: 8, cacheReadTokens: 9, cacheCreationTokens: 10 });
+      expect(summary?.subagentUsage).toEqual({ inputTokens: 7, outputTokens: 8, cacheReadTokens: 9, cacheCreationTokens: 10 });
+    });
+
+    it("falls back to per-line folding when message.id is missing, pinning the pre-dedup behaviour rather than silently dropping it", async () => {
+      const usage = { input_tokens: 10, output_tokens: 20, cache_read_input_tokens: 30, cache_creation_input_tokens: 40 };
+      const lines = [
+        assistantMessageBlockLine(null, { type: "text", text: "synthetic reply 1" }, "2026-01-01T00:00:00.000Z", usage),
+        assistantMessageBlockLine(null, { type: "text", text: "synthetic reply 2" }, "2026-01-01T00:00:01.000Z", usage),
+      ];
+      await writeFile(transcriptPath, lines.map((l) => `${l}\n`).join(""));
+
+      const cache = new TranscriptIndexCache();
+      await cache.refreshAndWait(sessionId, transcriptPath);
+      const summary = cache.getSummary(sessionId, transcriptPath);
+
+      // No message.id to dedup by, so each line folds independently — the pre-fix, per-line behaviour.
+      expect(summary?.totalUsage).toEqual({ inputTokens: 20, outputTokens: 40, cacheReadTokens: 60, cacheCreationTokens: 80 });
+      expect(summary?.modelBreakdown).toEqual([
+        { model: "synthetic-model-1", calls: 2, inputTokens: 20, outputTokens: 40, cacheReadTokens: 60, cacheCreationTokens: 80 },
+      ]);
+    });
+  });
+
+  describe("subagent visibility (M4)", () => {
+    it("surfaces an Agent/Task dispatch as running until its tool_result arrives", async () => {
+      const lines = [
+        userPromptLine("please dispatch a helper", "2026-01-01T00:00:00.000Z"),
+        assistantAgentDispatchLine(
+          "toolu_dispatch_1",
+          "2026-01-01T00:00:01.000Z",
+          { description: "synthetic helper task", subagent_type: "synthetic-helper" },
+        ),
+      ];
+      await writeFile(transcriptPath, lines.map((l) => `${l}\n`).join(""));
+
+      const cache = new TranscriptIndexCache();
+      await cache.refreshAndWait(sessionId, transcriptPath);
+      let summary = cache.getSummary(sessionId, transcriptPath);
+
+      expect(summary?.subagents.running).toEqual([
+        {
+          toolUseId: "toolu_dispatch_1",
+          description: "synthetic helper task",
+          subagentType: "synthetic-helper",
+          startedAt: "2026-01-01T00:00:01.000Z",
+        },
+      ]);
+
+      await appendFile(transcriptPath, `${toolResultLine("2026-01-01T00:00:02.000Z", "toolu_dispatch_1")}\n`);
+      await cache.refreshAndWait(sessionId, transcriptPath);
+      summary = cache.getSummary(sessionId, transcriptPath);
+
+      expect(summary?.subagents.running).toEqual([]);
+    });
+
+    it("ignores a dispatch tool_use block without a string id, since it can never be matched to a result", async () => {
+      const lines = [
+        userPromptLine("please dispatch a helper", "2026-01-01T00:00:00.000Z"),
+        JSON.stringify({
+          type: "assistant",
+          timestamp: "2026-01-01T00:00:01.000Z",
+          isSidechain: false,
+          message: {
+            role: "assistant",
+            model: "synthetic-model-1",
+            content: [{ type: "tool_use", name: "Task", input: { description: "no id here" } }],
+          },
+        }),
+      ];
+      await writeFile(transcriptPath, lines.map((l) => `${l}\n`).join(""));
+
+      const cache = new TranscriptIndexCache();
+      await cache.refreshAndWait(sessionId, transcriptPath);
+      const summary = cache.getSummary(sessionId, transcriptPath);
+
+      expect(summary?.subagents.running).toEqual([]);
+    });
+
+    it("counts sidechain lines and tracks the most recent timestamp as an anonymous fallback signal", async () => {
+      const lines = [
+        userPromptLine("main chain prompt", "2026-01-01T00:00:00.000Z"),
+        userPromptLine("sidechain prompt", "2026-01-01T00:00:01.000Z", { isSidechain: true }),
+        assistantLine("sidechain gist", "2026-01-01T00:00:02.000Z", { isSidechain: true }),
+      ];
+      await writeFile(transcriptPath, lines.map((l) => `${l}\n`).join(""));
+
+      const cache = new TranscriptIndexCache();
+      await cache.refreshAndWait(sessionId, transcriptPath);
+      const summary = cache.getSummary(sessionId, transcriptPath);
+
+      expect(summary?.subagents.sidechainLineCount).toBe(2);
+      expect(summary?.subagents.lastSidechainAt).toBe("2026-01-01T00:00:02.000Z");
+    });
+  });
+
+  describe("continuation flag (M4)", () => {
+    it("flags a turn whose prompt is the post-compaction preamble, case-insensitively, without dropping or renumbering it", async () => {
+      const preamble =
+        "This session is being continued from a previous conversation that ran out of context. The summary below covers...";
+      const lines = [
+        userPromptLine("ordinary first prompt", "2026-01-01T00:00:00.000Z"),
+        assistantLine("ordinary reply", "2026-01-01T00:00:01.000Z"),
+        userPromptLine(preamble.toUpperCase(), "2026-01-01T00:00:02.000Z"),
+      ];
+      await writeFile(transcriptPath, lines.map((l) => `${l}\n`).join(""));
+
+      const cache = new TranscriptIndexCache();
+      await cache.refreshAndWait(sessionId, transcriptPath);
+      const summary = cache.getSummary(sessionId, transcriptPath);
+
+      expect(summary?.turnCount).toBe(2);
+      expect(summary?.recentTurns).toHaveLength(2);
+      expect(summary?.recentTurns[0]).toMatchObject({ index: 0, continuation: false });
+      expect(summary?.recentTurns[1]).toMatchObject({ index: 1, continuation: true });
+    });
+
+    it("does not flag a turn that merely mentions the phrase later in its prompt", async () => {
+      const lines = [
+        userPromptLine(
+          'quoting it back: "this session is being continued from a previous conversation that ran out of context" is what the docs say',
+          "2026-01-01T00:00:00.000Z",
+        ),
+      ];
+      await writeFile(transcriptPath, lines.map((l) => `${l}\n`).join(""));
+
+      const cache = new TranscriptIndexCache();
+      await cache.refreshAndWait(sessionId, transcriptPath);
+      const summary = cache.getSummary(sessionId, transcriptPath);
+
+      expect(summary?.recentTurns[0]).toMatchObject({ continuation: false });
+    });
+  });
+
+  describe("sidechain isolation regression (M4)", () => {
+    it("still contributes nothing to turnCount, gist, toolCounts, toolCallsTotal, or the snapshot usage/model fields", async () => {
+      const lines = [
+        userPromptLine("main chain prompt", "2026-01-01T00:00:00.000Z"),
+        assistantLine("main chain gist", "2026-01-01T00:00:01.000Z"),
+        userPromptLine("sidechain prompt", "2026-01-01T00:00:02.000Z", { isSidechain: true }),
+        assistantToolUseLine("Grep", "2026-01-01T00:00:03.000Z", { synthetic: true }, { isSidechain: true }),
+        assistantLine("sidechain gist should not appear", "2026-01-01T00:00:04.000Z", {
+          isSidechain: true,
+          message: {
+            role: "assistant",
+            model: "sidechain-only-model",
+            content: [{ type: "text", text: "sidechain gist should not appear" }],
+            usage: {
+              input_tokens: 999,
+              output_tokens: 999,
+              cache_read_input_tokens: 999,
+              cache_creation_input_tokens: 999,
+            },
+          },
+        }),
+      ];
+      await writeFile(transcriptPath, lines.map((l) => `${l}\n`).join(""));
+
+      const cache = new TranscriptIndexCache();
+      await cache.refreshAndWait(sessionId, transcriptPath);
+      const summary = cache.getSummary(sessionId, transcriptPath);
+
+      // Main-chain-only fields: completely untouched by the three sidechain lines above.
+      expect(summary?.turnCount).toBe(1);
+      expect(summary?.lastAssistantGist).toEqual({ text: "main chain gist", truncated: false });
+      expect(summary?.toolCounts).toEqual({});
+      expect(summary?.toolCallsTotal).toBe(0);
+      expect(summary?.recentTurns).toHaveLength(1);
+
+      // The pre-existing snapshot fields stay a last-*main-chain*-message snapshot,
+      // not a total — SessionCard.vue renders `usage` as "ctx" from exactly this field.
+      expect(summary?.model).toBe("synthetic-model-1");
+      expect(summary?.usage).toEqual({
+        inputTokens: 10,
+        outputTokens: 20,
+        cacheReadTokens: 30,
+        cacheCreationTokens: 40,
+        contextTokens: 80,
+      });
+
+      // The new aggregate fields are the only ones allowed to have observed the sidechain data.
+      expect(summary?.totalUsage).toEqual({
+        inputTokens: 1009,
+        outputTokens: 1019,
+        cacheReadTokens: 1029,
+        cacheCreationTokens: 1039,
+      });
+      expect(summary?.subagentUsage).toEqual({
+        inputTokens: 999,
+        outputTokens: 999,
+        cacheReadTokens: 999,
+        cacheCreationTokens: 999,
+      });
     });
   });
 });
