@@ -5,7 +5,7 @@ import { cn } from "@/lib/utils"
 
 // Note: upstream ships enter/exit fade classes here that require
 // `tw-animate-css`, a dependency this repo deliberately does not add
-// (see docs/DESIGN.md "Known deviations") — omitted rather than shipped inert.
+// (see docs/DESIGN.md "Known deviations"). Omitted rather than shipped inert.
 const props = defineProps<DialogOverlayProps & { class?: HTMLAttributes["class"] }>()
 </script>
 

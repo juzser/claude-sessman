@@ -13,7 +13,7 @@ function readStoredPreference(): Theme | null {
     const stored = window.localStorage.getItem(STORAGE_KEY)
     return stored === "light" || stored === "dark" ? stored : null
   } catch {
-    // localStorage unavailable (e.g. disabled/private browsing) — fall
+    // localStorage unavailable (e.g. disabled/private browsing), so fall
     // through to the system preference.
     return null
   }

@@ -37,7 +37,7 @@ const forwarded = useForwardPropsEmits(delegatedProps, emits)
 
 // Note: upstream ships per-side slide-in/slide-out classes here that
 // require `tw-animate-css`, a dependency this repo deliberately does not
-// add (see docs/DESIGN.md "Known deviations") — sheets open/close without
+// add (see docs/DESIGN.md "Known deviations"). Sheets open/close without
 // a slide transition rather than shipping inert animation classes.
 const sideClasses: Record<string, string> = {
   right: "inset-y-0 right-0 h-full w-3/4 border-l border-line sm:max-w-sm",

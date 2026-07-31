@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
 import type { BannerTone } from "."
 
-// Fixed channel mapping (per design spec — do not add new channels here):
+// Fixed channel mapping (per design spec, do not add new channels here):
 // - Load failure: banner replaces the data region, with a Retry action.
 // - Submit failure: banner sits atop the form being submitted.
 // - Success: reported via toast, never a banner.
