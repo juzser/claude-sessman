@@ -32,7 +32,9 @@ function broadcastPayload(wss: WebSocketServer, payload: string): void {
 export function startServer(config: AppConfig): RunningServer {
   const gitCache = new GitInfoCache();
   const transcriptIndexCache = new TranscriptIndexCache();
-  const app = createApp(config, gitCache, transcriptIndexCache);
+  const app = createApp(config, gitCache, transcriptIndexCache, {
+    selfOrigin: `http://${config.host}:${config.port}`,
+  });
 
   const httpServer = serve({
     fetch: app.fetch,

@@ -166,4 +166,50 @@ describe("createApp", () => {
     });
     expect(res.status).toBe(404);
   });
+
+  it("rejects a non-GET request missing the X-Sessman-Client header, without reaching the route", async () => {
+    const { runner, calls } = makeFakeFocusRunner({ ok: true });
+    const app = createApp({ sessionsDir, projectsDir }, new GitInfoCache(), transcriptIndexCache, {
+      focusRunner: runner,
+    });
+
+    // No X-Sessman-Client header at all — should be rejected by the guard
+    // before the route even looks up the (nonexistent) session, so this must
+    // NOT be the 404 the route would otherwise produce.
+    const res = await app.request("/api/sessions/no-such-session/focus", { method: "POST" });
+
+    expect(res.status).toBe(403);
+    expect(calls).toEqual([]);
+  });
+
+  it("rejects a non-GET request whose Origin header isn't on the allowlist", async () => {
+    const { runner, calls } = makeFakeFocusRunner({ ok: true });
+    const app = createApp({ sessionsDir, projectsDir }, new GitInfoCache(), transcriptIndexCache, {
+      focusRunner: runner,
+    });
+
+    const res = await app.request("/api/sessions/no-such-session/focus", {
+      method: "POST",
+      headers: { ...CLIENT_HEADERS, Origin: "http://evil.example" },
+    });
+
+    expect(res.status).toBe(403);
+    expect(calls).toEqual([]);
+  });
+
+  it("allows a non-GET request whose Origin is the known web dev origin", async () => {
+    const { runner } = makeFakeFocusRunner({ ok: true });
+    const app = createApp({ sessionsDir, projectsDir }, new GitInfoCache(), transcriptIndexCache, {
+      focusRunner: runner,
+    });
+
+    const res = await app.request("/api/sessions/no-such-session/focus", {
+      method: "POST",
+      headers: { ...CLIENT_HEADERS, Origin: "http://localhost:5177" },
+    });
+
+    // Still 404 (unknown session) rather than 403 — the guard let it through
+    // to the route.
+    expect(res.status).toBe(404);
+  });
 });
