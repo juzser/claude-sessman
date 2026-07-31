@@ -13,7 +13,9 @@ Milestone list and the decisions behind each, for future work. Terse by design.
 - [x] Surface: last user prompt, last assistant gist, model, token/context usage, tool-call counts — wired into `EnrichedSession.transcriptSummary` (`null` until the first scan completes) and into `GET /api/sessions/:sessionId/detail` for the fuller (2000-char) view.
 - [x] "Focus terminal tab" action via AppleScript (`POST /api/sessions/:sessionId/focus`), targeting the session's `tty` resolved server-side.
   - **Terminal-only limitation**: the AppleScript targets Apple's own `Terminal.app` and looks up the tab by `tty of t`. Other terminal emulators (iTerm2, etc.) don't expose an equivalent AppleScript surface the same way, so focusing a session running in one of those returns a "could not focus" error rather than actually switching tabs. No plan yet to special-case iTerm2's own scripting dictionary; tracked here for whoever picks it up.
-- [ ] Session detail drawer in the UI (`web/` — not part of this PR; the `/detail` route above is ready for it).
+- [x] Session detail drawer in the UI (`web/`): cards show a truncated last-prompt line, model, turn/tool-call counts, and a compact context-token figure (null-safe placeholders until the transcript index completes its first scan); clicking a card opens a drawer that fetches `GET /api/sessions/:sessionId/detail` and shows the full prompt/gist, usage breakdown, per-tool counts, session metadata, and the last-20-turns list (newest first); a "Focus tab" action lives on both the card and the drawer.
+
+**M2 complete** (server + web). M3 consumes the same `recentTurns` last-20-turns buffer already returned by `/detail` — the turn list is deliberately rendered by its own component (`TranscriptTurnList.vue`) rather than inlined in the drawer, so M3 can reuse or replace it with a flow-graph rendering of the same data.
 
 ## M3 — flow view
 - Decided spec: **one node = one user prompt turn** (not one tool call).
