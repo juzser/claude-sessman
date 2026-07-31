@@ -19,7 +19,8 @@
   sessions-service.ts (getSessions: enrich all, filter to alive unless includeDead)
         │
         ├─ GET  /api/sessions              ──► web: useSessions() initial load
-        ├─ GET  /api/sessions/:id/detail   ──► web: SessionDetailDrawer one-shot fetch
+        ├─ GET  /api/sessions/:id/detail   ──► web: SessionDetailDrawer Turns-tab fetch
+        ├─ GET  /api/sessions/:id/flow     ──► web: SessionDetailDrawer Flow-tab fetch → flow-model.ts → SessionFlowView.vue
         ├─ POST /api/sessions/:id/focus    ──► web: FocusButton
         └─ WS   /ws  (broadcast on change) ──► web: ws-client (reconnect + backoff)
                     ▲
@@ -105,12 +106,16 @@ against files that can reach tens of MB:
   `transcript-index.test.ts` asserts this directly: it writes a sentinel
   value into bytes already scanned and fails if the scanner ever re-reads
   them.
-- `recentTurns` is a ring buffer capped at `MAX_RECENT_TURNS` (20): pushing
-  a 21st turn shifts the oldest out. Each turn's own `index` counts across
-  the *entire* transcript and is never reset by the ring buffer — so
-  `recentTurns[0].index` is not `0` once a transcript has more than 20
-  turns. See `docs/DATA-CONTRACT.md` for the full line-shape contract this
-  scan implements.
+- The scanner holds a single ring buffer (`state.recentTurns`) capped at
+  `MAX_FLOW_TURNS` (100): pushing a 101st turn shifts the oldest out. Each
+  turn's own `index` counts across the *entire* transcript and is never
+  reset by the ring buffer — so the buffer's oldest retained turn no longer
+  has `index: 0` once a transcript has more than 100 turns.
+  `GET /api/sessions/:id/detail` (and `TranscriptSummary.recentTurns`) only
+  ever exposes the *last* `MAX_RECENT_TURNS` (20) turns of that buffer;
+  `GET /api/sessions/:id/flow` exposes the whole retained buffer instead.
+  See `docs/DATA-CONTRACT.md` for the full line-shape contract this scan
+  implements and `docs/API.md` for both response shapes.
 - At most one scan is in flight per session (`pending`), so a watcher tick
   and a concurrent `/detail` request against the same session dedupe into
   one scan.
@@ -172,6 +177,23 @@ each time. There is no separate liveness timer.
     any ref. This stops a slow response for a session the user has since
     closed or switched away from from overwriting the drawer's current
     (newer, or absent) state.
+  - The Flow tab works the same way through its own `loadFlow(sessionId)`,
+    which fetches `GET /api/sessions/:id/flow` and applies the identical
+    `if (props.sessionId !== sessionId) return` guard before storing the
+    result. Both fetching and this guard live entirely in
+    `SessionDetailDrawer.vue` — the Flow tab's own component below has no
+    fetch logic of its own.
+- **`web/src/lib/flow-model.ts`** is pure and deterministic: its
+  `buildFlowGraph()` maps a `FlowSummary` payload straight to Vue Flow
+  nodes/edges with no I/O and no randomness — a node's `id` and vertical
+  `position` are both derived solely from that turn's own `index`, not its
+  position in the `turns` array, so relayout is stable even as older turns
+  age out of the server's retention window.
+- **`web/src/components/SessionFlowView.vue`** is purely presentational —
+  it renders whatever `flow`/`state`/`errorMessage` props
+  `SessionDetailDrawer.vue` passes it and emits a `retry` event; it does not
+  fetch anything itself and holds no stale-response guard of its own (that
+  logic lives one level up, in `loadFlow()` above).
 
 ## Known limitations / non-goals
 
@@ -182,8 +204,10 @@ each time. There is no separate liveness timer.
   general-purpose auth; this is a single-user local tool by design.
 - No terminal embedding or message-sending into a session — that's the
   Phase 2 tmux-relay scope (`docs/ROADMAP.md`), not implemented here.
-- No prompt-turn flow graph in this codebase yet — that's M3
-  (`docs/ROADMAP.md`), tracked and worked on separately.
+- The flow graph's per-node content is deterministic only — it's built
+  straight from `FlowSummary`/`TranscriptTurn` fields, with no LLM
+  summarization step. Cheap-LLM node summaries are the post-M3 TODO tracked
+  in `docs/ROADMAP.md`, not implemented here.
 - "Focus tab" only supports `Terminal.app`; other terminal emulators
   return a focus-failed error rather than switching tabs (by design, not
   a bug to fix here).

@@ -12,7 +12,7 @@ Reads local files only, binds to `127.0.0.1` only, sends nothing anywhere — se
 
 - **M1** — session registry parsed/enriched, card grid.
 - **M2 (done)** — transcript tail/index, detail drawer, "focus tab" action.
-- **M3 (in progress)** — prompt-turn flow graph (Vue Flow), deterministic summaries only, no LLM calls yet.
+- **M3 (done)** — prompt-turn flow graph (Vue Flow) via `GET /api/sessions/:id/flow`, deterministic summaries only, no LLM calls yet.
 - **Phase 2** — tmux relay (`send-keys`/`capture-pane`, xterm.js).
 
 Full spec and decisions: `docs/ROADMAP.md`.
@@ -30,9 +30,9 @@ Full spec and decisions: `docs/ROADMAP.md`.
 
 `web/src/` (by concern):
 - `App.vue` — root state (sessions, query/sort, selected session, 1s clock)
-- `components/` — `SessionCard.vue`, `SessionDetailDrawer.vue`, `TranscriptTurnList.vue`, `FocusButton.vue`
+- `components/` — `SessionCard.vue`, `SessionDetailDrawer.vue`, `TranscriptTurnList.vue`, `SessionFlowView.vue` (Vue Flow rendering, presentational only), `FocusButton.vue`
 - `composables/useSessions.ts` — initial fetch + WS subscribe
-- `lib/` — pure logic + API client: `ws-client.ts`, `sessman-api.ts`, `types.ts` (duplicated from the server, see below), `status.ts`, `sort-filter.ts`, `time-ago.ts`, `path.ts`, `identicon.ts`, `transcript-format.ts` — each with a colocated `*.test.ts`
+- `lib/` — pure logic + API client: `ws-client.ts`, `sessman-api.ts`, `types.ts` (duplicated from the server, see below), `status.ts`, `sort-filter.ts`, `time-ago.ts`, `path.ts`, `identicon.ts`, `transcript-format.ts`, `flow-model.ts` (pure `/flow` payload → Vue Flow nodes/edges mapping) — each with a colocated `*.test.ts`
 
 Docs: `docs/ARCHITECTURE.md`, `docs/API.md`, `docs/DEVELOPMENT.md`, `docs/DATA-CONTRACT.md`, `docs/ROADMAP.md`.
 

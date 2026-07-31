@@ -73,6 +73,46 @@ be opened).
 }
 ```
 
+## `GET /api/sessions/:sessionId/flow`
+
+Backs the drawer's Flow tab (`SessionDetailDrawer.vue` → `SessionFlowView.vue`).
+Same lookup as `/detail`: looks the session up among **all** sessions
+(`includeDead: true` internally), so a session that just died is still
+findable here. Being a `GET`, it is **not** subject to the local-origin
+guard above.
+
+```ts
+// 404 — no session with this id, dead or alive
+{ error: "Session not found" }
+
+// 200
+{
+  session: EnrichedSession;
+  transcriptFlow: FlowSummary | null; // null until the transcript index has completed its first scan
+}
+```
+
+`FlowSummary` (`server/src/transcript-index.ts`):
+
+```ts
+{
+  turnCount: number;          // total turns seen across the whole transcript,
+                               // including any evicted from the retained window
+  retainedTurnCount: number;  // turns.length; <= MAX_FLOW_TURNS (100)
+  turnsDropped: boolean;      // turnCount > retainedTurnCount, i.e. the oldest
+                               // turns were evicted from the flow window
+  turns: TranscriptTurn[];    // oldest first — the whole retained ring buffer,
+                               // not just the last MAX_RECENT_TURNS (20) /detail exposes
+}
+```
+
+Each `TranscriptTurn` in `turns` has the same shape `/detail`'s `recentTurns[]`
+uses (see `docs/DATA-CONTRACT.md`), including `toolCalls` (up to
+`MAX_TOOL_CALLS_PER_TURN` = 40 entries, `{ name, target }`) and
+`toolCallsOmitted` (how many further tool calls in that turn weren't recorded
+individually once the cap was hit). Per-turn `prompt`/`gist` text is always
+truncated at 400 chars here too — see the known gap in `docs/DATA-CONTRACT.md`.
+
 ## `POST /api/sessions/:sessionId/focus`
 
 Subject to the local-origin guard above. The tty to focus is **always**
