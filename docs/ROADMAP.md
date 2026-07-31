@@ -9,10 +9,11 @@ Milestone list and the decisions behind each, for future work. Terse by design.
 - No embedded terminal, no message sending, no transcript rendering.
 
 ## M2 — transcript enrichment
-- Read transcripts (`~/.claude/projects/<slug>/<sessionId>.jsonl`) incrementally/tail-only — files reach 19 MB, never load whole files.
-- Surface: last user prompt, last assistant gist, model, token/context usage, tool-call counts.
-- Session detail drawer in the UI.
-- "Focus terminal tab" action via AppleScript, targeting the session's `tty`.
+- [x] Read transcripts (`~/.claude/projects/<slug>/<sessionId>.jsonl`) incrementally/tail-only — files reach 19 MB, never load whole files. Byte-offset/size/inode tracked per session; rotation/truncation detected and rescanned from 0; stale-while-revalidate cache so a read never blocks on a scan.
+- [x] Surface: last user prompt, last assistant gist, model, token/context usage, tool-call counts — wired into `EnrichedSession.transcriptSummary` (`null` until the first scan completes) and into `GET /api/sessions/:sessionId/detail` for the fuller (2000-char) view.
+- [x] "Focus terminal tab" action via AppleScript (`POST /api/sessions/:sessionId/focus`), targeting the session's `tty` resolved server-side.
+  - **Terminal-only limitation**: the AppleScript targets Apple's own `Terminal.app` and looks up the tab by `tty of t`. Other terminal emulators (iTerm2, etc.) don't expose an equivalent AppleScript surface the same way, so focusing a session running in one of those returns a "could not focus" error rather than actually switching tabs. No plan yet to special-case iTerm2's own scripting dictionary; tracked here for whoever picks it up.
+- [ ] Session detail drawer in the UI (`web/` — not part of this PR; the `/detail` route above is ready for it).
 
 ## M3 — flow view
 - Decided spec: **one node = one user prompt turn** (not one tool call).
