@@ -2,11 +2,13 @@ import { GitInfoCache } from "./git-info.js";
 import { checkPidReuse } from "./pid-reuse.js";
 import { getLiveProcessInfo, isProcessAlive } from "./process-info.js";
 import { getTranscriptInfo } from "./transcript.js";
+import { TranscriptIndexCache } from "./transcript-index.js";
 import type { EnrichedSession, RawSessionRecord } from "./types.js";
 
 export interface EnrichOptions {
   claudeProjectsDir: string;
   gitCache: GitInfoCache;
+  transcriptIndexCache: TranscriptIndexCache;
   /** Injectable for deterministic tests; defaults to Date.now(). */
   now?: number;
 }
@@ -42,6 +44,7 @@ export async function enrichSession(
     uptimeSec,
     lastActivityAgoSec,
     ...transcriptInfo,
+    transcriptSummary: options.transcriptIndexCache.getSummary(raw.sessionId, transcriptInfo.transcriptPath),
     git: options.gitCache.getGitInfo(raw.cwd),
   };
 }

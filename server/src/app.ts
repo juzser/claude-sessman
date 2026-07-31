@@ -2,9 +2,14 @@ import os from "node:os";
 import { Hono } from "hono";
 import type { GitInfoCache } from "./git-info.js";
 import { getSessions, type SessionsServiceConfig } from "./sessions-service.js";
+import type { TranscriptIndexCache } from "./transcript-index.js";
 
 /** Builds the Hono app; kept separate from the http/WS wiring so it's testable via app.request(). */
-export function createApp(config: SessionsServiceConfig, gitCache: GitInfoCache): Hono {
+export function createApp(
+  config: SessionsServiceConfig,
+  gitCache: GitInfoCache,
+  transcriptIndexCache: TranscriptIndexCache,
+): Hono {
   const app = new Hono();
 
   // The web client uses `home` to render "~/…/project" instead of the full
@@ -13,7 +18,7 @@ export function createApp(config: SessionsServiceConfig, gitCache: GitInfoCache)
 
   app.get("/api/sessions", async (c) => {
     const includeDead = c.req.query("includeDead") === "1";
-    const sessions = await getSessions(config, gitCache, { includeDead });
+    const sessions = await getSessions(config, gitCache, transcriptIndexCache, { includeDead });
     return c.json({ sessions });
   });
 

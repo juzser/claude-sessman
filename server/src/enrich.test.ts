@@ -6,6 +6,7 @@ import { promisify } from "node:util";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { enrichSession } from "./enrich.js";
 import { GitInfoCache } from "./git-info.js";
+import { TranscriptIndexCache } from "./transcript-index.js";
 import type { RawSessionRecord } from "./types.js";
 
 const execFileAsync = promisify(execFile);
@@ -43,10 +44,12 @@ async function waitFor<T>(fn: () => T, predicate: (v: T) => boolean, timeoutMs =
 describe("enrichSession", () => {
   let projectsDir: string;
   let gitCache: GitInfoCache;
+  let transcriptIndexCache: TranscriptIndexCache;
 
   beforeEach(async () => {
     projectsDir = await mkdtemp(path.join(tmpdir(), "sessman-enrich-projects-"));
     gitCache = new GitInfoCache();
+    transcriptIndexCache = new TranscriptIndexCache();
   });
 
   afterEach(async () => {
@@ -56,7 +59,7 @@ describe("enrichSession", () => {
   it("marks a session with a live pid as alive, and computes uptime/last-activity", async () => {
     const raw = makeRaw();
     const now = Date.now();
-    const enriched = await enrichSession(raw, { claudeProjectsDir: projectsDir, gitCache, now });
+    const enriched = await enrichSession(raw, { claudeProjectsDir: projectsDir, gitCache, transcriptIndexCache, now });
 
     expect(enriched.alive).toBe(true);
     expect(enriched.uptimeSec).toBeCloseTo(60, -1);
@@ -66,13 +69,13 @@ describe("enrichSession", () => {
 
   it("marks a session with a dead pid as not alive", async () => {
     const raw = makeRaw({ pid: 2 ** 30 });
-    const enriched = await enrichSession(raw, { claudeProjectsDir: projectsDir, gitCache });
+    const enriched = await enrichSession(raw, { claudeProjectsDir: projectsDir, gitCache, transcriptIndexCache });
     expect(enriched.alive).toBe(false);
   });
 
   it("normalises a missing name through untouched (registry already defaults it)", async () => {
     const raw = makeRaw({ name: null });
-    const enriched = await enrichSession(raw, { claudeProjectsDir: projectsDir, gitCache });
+    const enriched = await enrichSession(raw, { claudeProjectsDir: projectsDir, gitCache, transcriptIndexCache });
     expect(enriched.name).toBeNull();
   });
 
@@ -82,14 +85,38 @@ describe("enrichSession", () => {
     await mkdir(path.join(projectsDir, slug), { recursive: true });
     await writeFile(path.join(projectsDir, slug, `${raw.sessionId}.jsonl`), "{}\n");
 
-    const enriched = await enrichSession(raw, { claudeProjectsDir: projectsDir, gitCache });
+    const enriched = await enrichSession(raw, { claudeProjectsDir: projectsDir, gitCache, transcriptIndexCache });
     expect(enriched.projectSlug).toBe(slug);
     expect(enriched.transcriptSize).toBeGreaterThan(0);
   });
 
+  it("reports transcriptSummary:null before the first scan, then populated after one", async () => {
+    const raw = makeRaw({ cwd: "/tmp/proj-c" });
+    const slug = "-tmp-proj-c";
+    await mkdir(path.join(projectsDir, slug), { recursive: true });
+    const transcriptPath = path.join(projectsDir, slug, `${raw.sessionId}.jsonl`);
+    await writeFile(
+      transcriptPath,
+      `${JSON.stringify({
+        type: "user",
+        timestamp: "2026-01-01T00:00:00.000Z",
+        message: { role: "user", content: "synthetic prompt" },
+      })}\n`,
+    );
+
+    const firstPass = await enrichSession(raw, { claudeProjectsDir: projectsDir, gitCache, transcriptIndexCache });
+    expect(firstPass.transcriptSummary).toBeNull();
+
+    await transcriptIndexCache.refreshAndWait(raw.sessionId, transcriptPath);
+
+    const secondPass = await enrichSession(raw, { claudeProjectsDir: projectsDir, gitCache, transcriptIndexCache });
+    expect(secondPass.transcriptSummary?.turnCount).toBe(1);
+    expect(secondPass.transcriptSummary?.lastUserPrompt?.text).toBe("synthetic prompt");
+  });
+
   it("reports git:null for a cwd that is not a git repo", async () => {
     const raw = makeRaw({ cwd: "/tmp/synthetic-non-git-cwd-xyz" });
-    const enriched = await enrichSession(raw, { claudeProjectsDir: projectsDir, gitCache });
+    const enriched = await enrichSession(raw, { claudeProjectsDir: projectsDir, gitCache, transcriptIndexCache });
     expect(enriched.git).toBeNull();
   });
 
@@ -107,7 +134,7 @@ describe("enrichSession", () => {
       gitCache.getGitInfo(repoDir); // prime
       await waitFor(() => gitCache.getGitInfo(repoDir), (v) => v !== null);
 
-      const enriched = await enrichSession(raw, { claudeProjectsDir: projectsDir, gitCache });
+      const enriched = await enrichSession(raw, { claudeProjectsDir: projectsDir, gitCache, transcriptIndexCache });
       expect(enriched.git).toEqual({ branch: "main", dirty: false });
     } finally {
       await rm(repoDir, { recursive: true, force: true });

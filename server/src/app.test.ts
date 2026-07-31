@@ -4,14 +4,17 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createApp } from "./app.js";
 import { GitInfoCache } from "./git-info.js";
+import { TranscriptIndexCache } from "./transcript-index.js";
 
 describe("createApp", () => {
   let sessionsDir: string;
   let projectsDir: string;
+  let transcriptIndexCache: TranscriptIndexCache;
 
   beforeEach(async () => {
     sessionsDir = await mkdtemp(path.join(tmpdir(), "sessman-app-sessions-"));
     projectsDir = await mkdtemp(path.join(tmpdir(), "sessman-app-projects-"));
+    transcriptIndexCache = new TranscriptIndexCache();
   });
 
   afterEach(async () => {
@@ -20,7 +23,7 @@ describe("createApp", () => {
   });
 
   it("GET /api/health returns ok plus the server's home dir", async () => {
-    const app = createApp({ sessionsDir, projectsDir }, new GitInfoCache());
+    const app = createApp({ sessionsDir, projectsDir }, new GitInfoCache(), transcriptIndexCache);
     const res = await app.request("/api/health");
     expect(res.status).toBe(200);
     const body = (await res.json()) as { ok: boolean; home: string };
@@ -54,7 +57,7 @@ describe("createApp", () => {
       }),
     );
 
-    const app = createApp({ sessionsDir, projectsDir }, new GitInfoCache());
+    const app = createApp({ sessionsDir, projectsDir }, new GitInfoCache(), transcriptIndexCache);
 
     const liveRes = await app.request("/api/sessions");
     const liveBody = (await liveRes.json()) as { sessions: Array<{ sessionId: string }> };
