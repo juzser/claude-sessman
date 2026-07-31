@@ -1,4 +1,4 @@
-import { appendFile, mkdtemp, readFile, rm, unlink, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, mkdtemp, readFile, rm, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -145,6 +145,33 @@ function assistantMessageBlockLine(
       content: [block],
       ...(usage ? { usage } : {}),
     },
+  });
+}
+
+/** Builds one assistant-message JSONL line as written inside a real `subagents/agent-<id>.jsonl` sidecar file. */
+function subagentUsageLine(messageId: string, usage: Record<string, number>, text: string): string {
+  return JSON.stringify({
+    type: "assistant",
+    isSidechain: true,
+    message: {
+      id: messageId,
+      role: "assistant",
+      model: "synthetic-model-1",
+      content: [{ type: "text", text }],
+      usage,
+    },
+  });
+}
+
+/** Builds the content of one `agent-<id>.meta.json` sidecar file — exactly the 4 documented keys. */
+function subagentMetaJson(
+  overrides: Partial<{ agentType: string; description: string; spawnDepth: number; toolUseId: string }> = {},
+): string {
+  return JSON.stringify({
+    agentType: overrides.agentType ?? "general-purpose",
+    description: overrides.description ?? "synthetic subagent task",
+    spawnDepth: overrides.spawnDepth ?? 0,
+    toolUseId: overrides.toolUseId ?? "toolu_dispatch_1",
   });
 }
 
@@ -939,6 +966,203 @@ describe("TranscriptIndexCache", () => {
 
       expect(summary?.subagents.sidechainLineCount).toBe(2);
       expect(summary?.subagents.lastSidechainAt).toBe("2026-01-01T00:00:02.000Z");
+    });
+  });
+
+  describe("real subagent visibility via subagents/ directory (M4 follow-up)", () => {
+    it("joins a real subagent (by its .meta.json toolUseId) to the matching running dispatch, then flips to finished once the tool_result arrives", async () => {
+      const lines = [
+        userPromptLine("please dispatch a helper", "2026-01-01T00:00:00.000Z"),
+        assistantAgentDispatchLine(
+          "toolu_dispatch_1",
+          "2026-01-01T00:00:01.000Z",
+          { description: "synthetic helper task", subagent_type: "synthetic-helper" },
+        ),
+      ];
+      await writeFile(transcriptPath, lines.map((l) => `${l}\n`).join(""));
+
+      const subagentsDir = path.join(dir, sessionId, "subagents");
+      await mkdir(subagentsDir, { recursive: true });
+      await writeFile(
+        path.join(subagentsDir, "agent-synthetic-agent-1.jsonl"),
+        `${subagentUsageLine(
+          "msg_sub_a",
+          { input_tokens: 50, output_tokens: 5, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
+          "subagent reply",
+        )}\n`,
+      );
+      await writeFile(
+        path.join(subagentsDir, "agent-synthetic-agent-1.meta.json"),
+        subagentMetaJson({ toolUseId: "toolu_dispatch_1" }),
+      );
+
+      const cache = new TranscriptIndexCache();
+      await cache.refreshAndWait(sessionId, transcriptPath);
+      let summary = cache.getSummary(sessionId, transcriptPath);
+
+      expect(summary?.subagents.agents).toEqual([
+        {
+          agentId: "synthetic-agent-1",
+          agentType: "general-purpose",
+          description: "synthetic subagent task",
+          spawnDepth: 0,
+          toolUseId: "toolu_dispatch_1",
+          usage: { inputTokens: 50, outputTokens: 5, cacheReadTokens: 0, cacheCreationTokens: 0 },
+          running: true,
+        },
+      ]);
+
+      // This subagent's toolUseId is tracked by BOTH the main-chain running
+      // heuristic (subagents.running, via state.pendingSubagents) and the
+      // sibling-file usage sum (subagents.agents[].usage) — the one case
+      // where a subagent genuinely "appears in both paths". Its 50/5/0/0
+      // must be counted exactly once, not doubled to 100/10/0/0: the running
+      // heuristic only ever tracks toolUseId/description/subagentType/startedAt,
+      // never a usage figure of its own to add.
+      expect(summary?.totalUsage).toEqual({
+        inputTokens: 50,
+        outputTokens: 5,
+        cacheReadTokens: 0,
+        cacheCreationTokens: 0,
+      });
+      expect(summary?.subagentUsage).toEqual({
+        inputTokens: 50,
+        outputTokens: 5,
+        cacheReadTokens: 0,
+        cacheCreationTokens: 0,
+      });
+
+      await appendFile(transcriptPath, `${toolResultLine("2026-01-01T00:00:02.000Z", "toolu_dispatch_1")}\n`);
+      await cache.refreshAndWait(sessionId, transcriptPath);
+      summary = cache.getSummary(sessionId, transcriptPath);
+
+      expect(summary?.subagents.agents).toEqual([
+        {
+          agentId: "synthetic-agent-1",
+          agentType: "general-purpose",
+          description: "synthetic subagent task",
+          spawnDepth: 0,
+          toolUseId: "toolu_dispatch_1",
+          usage: { inputTokens: 50, outputTokens: 5, cacheReadTokens: 0, cacheCreationTokens: 0 },
+          running: false,
+        },
+      ]);
+      expect(summary?.totalUsage).toEqual({
+        inputTokens: 50,
+        outputTokens: 5,
+        cacheReadTokens: 0,
+        cacheCreationTokens: 0,
+      });
+      expect(summary?.subagentUsage).toEqual({
+        inputTokens: 50,
+        outputTokens: 5,
+        cacheReadTokens: 0,
+        cacheCreationTokens: 0,
+      });
+    });
+
+    it("still reports a finished subagent whose toolUseId was never seen as a pending dispatch in the main chain", async () => {
+      await writeFile(
+        transcriptPath,
+        `${userPromptLine("no dispatch info in the main chain", "2026-01-01T00:00:00.000Z")}\n`,
+      );
+
+      const subagentsDir = path.join(dir, sessionId, "subagents");
+      await mkdir(subagentsDir, { recursive: true });
+      await writeFile(
+        path.join(subagentsDir, "agent-synthetic-agent-2.jsonl"),
+        `${subagentUsageLine(
+          "msg_sub_b",
+          { input_tokens: 12, output_tokens: 3, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
+          "already finished",
+        )}\n`,
+      );
+      await writeFile(
+        path.join(subagentsDir, "agent-synthetic-agent-2.meta.json"),
+        subagentMetaJson({ toolUseId: "toolu_never_seen" }),
+      );
+
+      const cache = new TranscriptIndexCache();
+      await cache.refreshAndWait(sessionId, transcriptPath);
+      const summary = cache.getSummary(sessionId, transcriptPath);
+
+      expect(summary?.subagents.agents).toEqual([
+        {
+          agentId: "synthetic-agent-2",
+          agentType: "general-purpose",
+          description: "synthetic subagent task",
+          spawnDepth: 0,
+          toolUseId: "toolu_never_seen",
+          usage: { inputTokens: 12, outputTokens: 3, cacheReadTokens: 0, cacheCreationTokens: 0 },
+          running: false,
+        },
+      ]);
+      expect(summary?.subagents.running).toEqual([]);
+    });
+
+    it("folds sibling-file usage into totalUsage/subagentUsage on top of (not double-counted against) the still-supported inline sidechain path, and repeated reads never re-add it", async () => {
+      const inlineSidechainUsage = {
+        input_tokens: 5,
+        output_tokens: 6,
+        cache_read_input_tokens: 7,
+        cache_creation_input_tokens: 8,
+      };
+      const lines = [
+        userPromptLine("main chain prompt", "2026-01-01T00:00:00.000Z"),
+        assistantLine("main chain reply", "2026-01-01T00:00:01.000Z"), // default usage 10/20/30/40, main-chain only
+        assistantMessageBlockLine(
+          "msg_inline_sidechain",
+          { type: "text", text: "legacy inline sidechain content" },
+          "2026-01-01T00:00:02.000Z",
+          inlineSidechainUsage,
+          true,
+        ),
+      ];
+      await writeFile(transcriptPath, lines.map((l) => `${l}\n`).join(""));
+
+      const subagentsDir = path.join(dir, sessionId, "subagents");
+      await mkdir(subagentsDir, { recursive: true });
+      await writeFile(
+        path.join(subagentsDir, "agent-synthetic-agent-3.jsonl"),
+        `${subagentUsageLine(
+          "msg_sub_c",
+          { input_tokens: 100, output_tokens: 20, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
+          "real subagent reply",
+        )}\n`,
+      );
+
+      const cache = new TranscriptIndexCache();
+      await cache.refreshAndWait(sessionId, transcriptPath);
+      let summary = cache.getSummary(sessionId, transcriptPath);
+
+      // main-chain (10/20/30/40) + inline sidechain (5/6/7/8) + sibling file (100/20/0/0)
+      const expectedTotal = { inputTokens: 115, outputTokens: 46, cacheReadTokens: 37, cacheCreationTokens: 48 };
+      // inline sidechain (5/6/7/8) + sibling file (100/20/0/0) — each source counted exactly once
+      const expectedSubagent = { inputTokens: 105, outputTokens: 26, cacheReadTokens: 7, cacheCreationTokens: 8 };
+
+      expect(summary?.totalUsage).toEqual(expectedTotal);
+      expect(summary?.subagentUsage).toEqual(expectedSubagent);
+
+      // Reading again with no new bytes anywhere must not re-add either source.
+      summary = cache.getSummary(sessionId, transcriptPath);
+      expect(summary?.totalUsage).toEqual(expectedTotal);
+      expect(summary?.subagentUsage).toEqual(expectedSubagent);
+
+      // Nor must an explicit re-scan with nothing new to read.
+      await cache.refreshAndWait(sessionId, transcriptPath);
+      summary = cache.getSummary(sessionId, transcriptPath);
+      expect(summary?.totalUsage).toEqual(expectedTotal);
+      expect(summary?.subagentUsage).toEqual(expectedSubagent);
+    });
+
+    it("degrades to an empty agents list, without throwing, when subagents/ doesn't exist", async () => {
+      await writeFile(transcriptPath, `${userPromptLine("no subagents dir at all", "2026-01-01T00:00:00.000Z")}\n`);
+
+      const cache = new TranscriptIndexCache();
+      await cache.refreshAndWait(sessionId, transcriptPath);
+      const summary = cache.getSummary(sessionId, transcriptPath);
+
+      expect(summary?.subagents.agents).toEqual([]);
     });
   });
 

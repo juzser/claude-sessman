@@ -1,5 +1,14 @@
 import { stat } from "node:fs/promises";
 import { streamAppend } from "./jsonl-stream.js";
+import {
+  emptySubagentIndexState,
+  refreshSubagentIndex,
+  sumSubagentUsage,
+  toSubagentRecords,
+  type SubagentIndexState,
+  type SubagentRecord,
+  type SubagentUsage,
+} from "./subagent-index.js";
 
 const DEFAULT_TTL_MS = 1000;
 const SUMMARY_TEXT_LIMIT = 400;
@@ -91,6 +100,20 @@ export interface RunningSubagent {
   startedAt: string | null;
 }
 
+/** One subagent discovered under `<transcriptDir>/<sessionId>/subagents/`, joined to the main-chain dispatch (if any) that spawned it. */
+export interface SubagentAgentSummary {
+  agentId: string;
+  agentType: string | null;
+  description: string | null;
+  spawnDepth: number | null;
+  /** The main-chain tool_use id that dispatched this subagent, from its .meta.json — null if the sidecar file has no (or malformed) meta. */
+  toolUseId: string | null;
+  /** Summed usage across this subagent's own .jsonl, folded once per message.id. Null until at least one usage snapshot is seen. */
+  usage: SummedUsage | null;
+  /** True while `toolUseId` still matches an unresolved entry in `running` — i.e. no tool_result has arrived for the dispatch yet. */
+  running: boolean;
+}
+
 export interface SubagentSummary {
   /**
    * Count of `isSidechain: true` lines seen anywhere in the transcript (any
@@ -109,6 +132,14 @@ export interface SubagentSummary {
    * failure mode.
    */
   running: RunningSubagent[];
+  /**
+   * Every subagent discovered under `<transcriptDir>/<sessionId>/subagents/`,
+   * finished or still running, sorted by agentId. Joined to `running` above
+   * by `toolUseId` where its .meta.json names one. Empty when the CLI version
+   * never wrote the directory (or no subagent has run yet) — see
+   * docs/DATA-CONTRACT.md.
+   */
+  agents: SubagentAgentSummary[];
 }
 
 export interface TranscriptTurn {
@@ -224,6 +255,8 @@ interface IndexState {
   pendingSubagents: Map<string, RunningSubagent>;
   /** Dedup state keyed by assistant `message.id`, so a multi-line message is folded into the aggregates once, not once per line. Grows unboundedly for the life of the process (no eviction) — acceptable, see docs/DATA-CONTRACT.md. */
   assistantMessageDedup: Map<string, AssistantMessageDedup>;
+  /** Incremental scan state for `<transcriptDir>/<sessionId>/subagents/*.jsonl` — the real per-subagent transcripts, separate from the inline isSidechain path above. */
+  subagentIndex: SubagentIndexState;
 }
 
 interface CacheEntry {
@@ -258,6 +291,7 @@ function emptyState(): IndexState {
     lastSidechainAt: null,
     pendingSubagents: new Map(),
     assistantMessageDedup: new Map(),
+    subagentIndex: emptySubagentIndexState(),
   };
 }
 
@@ -428,6 +462,28 @@ function applyAggregateAssistantEntry(state: IndexState, message: Record<string,
   if (model && (shouldFoldUsage || isFirstCallForId)) {
     foldModelUsage(state, model, shouldFoldUsage ? usage : null, isFirstCallForId);
   }
+}
+
+/**
+ * Pure combine of two possibly-null usage snapshots — used to fold the
+ * sibling-file-derived subagent usage (recomputed fresh from
+ * `state.subagentIndex` on every read) together with the inline-scan-derived
+ * accumulator (`state.totalUsage`/`state.subagentUsage`) WITHOUT writing the
+ * result back into either source. Read-time-only: `toSummary` can be called
+ * any number of times (e.g. by two back-to-back `getSummary` calls with no
+ * intervening scan) and always recomputes the same total from the same two
+ * never-mutated-together sources, rather than accumulating a fresh file sum
+ * onto an already-combined total each time (which would inflate it further on
+ * every read).
+ */
+function combineUsage(a: SummedUsage | null, b: SubagentUsage | null): SummedUsage | null {
+  if (!a && !b) return null;
+  return {
+    inputTokens: (a?.inputTokens ?? 0) + (b?.inputTokens ?? 0),
+    outputTokens: (a?.outputTokens ?? 0) + (b?.outputTokens ?? 0),
+    cacheReadTokens: (a?.cacheReadTokens ?? 0) + (b?.cacheReadTokens ?? 0),
+    cacheCreationTokens: (a?.cacheCreationTokens ?? 0) + (b?.cacheCreationTokens ?? 0),
+  };
 }
 
 /** Sorted by calls desc, then model name asc — a stable, deterministic ordering for display. */
@@ -606,7 +662,7 @@ function applyLine(state: IndexState, rawLine: string): void {
   applyEntry(state, parsed);
 }
 
-async function refreshOne(prior: IndexState | null, transcriptPath: string): Promise<IndexState | null> {
+async function refreshOne(prior: IndexState | null, transcriptPath: string, sessionId: string): Promise<IndexState | null> {
   let stats;
   try {
     stats = await stat(transcriptPath);
@@ -630,6 +686,13 @@ async function refreshOne(prior: IndexState | null, transcriptPath: string): Pro
   state.size = stats.size;
   state.mtimeMs = stats.mtimeMs;
   state.ino = stats.ino;
+
+  // Sibling per-subagent sidecar files live in a directory named after the
+  // session id, next to the main transcript. Scanning them never throws (see
+  // subagent-index.ts) — an absent directory (older CLI versions, or no
+  // subagent has run yet) just leaves state.subagentIndex empty.
+  await refreshSubagentIndex(state.subagentIndex, transcriptPath, sessionId);
+
   return state;
 }
 
@@ -647,16 +710,43 @@ function turnToSummary(turn: MutableTurn, limit: number): TranscriptTurn {
   };
 }
 
-function toSubagentSummary(state: IndexState): SubagentSummary {
+/**
+ * Builds the `agents` list, joining each sibling-file-derived record to the
+ * main-chain "running" heuristic by `toolUseId`. A record's `running` flag is
+ * true exactly while its `toolUseId` still has an unresolved entry in
+ * `state.pendingSubagents` — the same heuristic `SubagentSummary.running`
+ * already uses, so a dispatch that never gets a matching sidecar file (older
+ * CLI versions) is unaffected, and a sidecar file whose `toolUseId` never
+ * appeared as a pending dispatch (or already resolved) is still reported,
+ * just with `running: false`.
+ */
+function toSubagentSummary(state: IndexState, records: SubagentRecord[]): SubagentSummary {
   return {
     sidechainLineCount: state.sidechainLineCount,
     lastSidechainAt: state.lastSidechainAt,
     // Newest-launched first: pendingSubagents is insertion-ordered oldest-first.
     running: [...state.pendingSubagents.values()].reverse(),
+    agents: records.map((record) => ({
+      agentId: record.agentId,
+      agentType: record.agentType,
+      description: record.description,
+      spawnDepth: record.spawnDepth,
+      toolUseId: record.toolUseId,
+      usage: record.usage ? { ...record.usage } : null,
+      running: record.toolUseId !== null && state.pendingSubagents.has(record.toolUseId),
+    })),
   };
 }
 
 function toSummary(state: IndexState, textLimit: number): TranscriptSummary {
+  // Computed once per read and shared between `agents` and the combined
+  // totals below — a pure re-derivation from state.subagentIndex every call,
+  // never written back into `state`, so repeated reads (or reads with no
+  // intervening scan) always recompute the same numbers instead of stacking
+  // a fresh file-derived sum onto an already-combined running total.
+  const subagentRecords = toSubagentRecords(state.subagentIndex);
+  const fileUsage = sumSubagentUsage(subagentRecords);
+
   return {
     turnCount: state.turnCount,
     lastUserPrompt: state.lastUserPrompt ? truncateTo(state.lastUserPrompt, textLimit) : null,
@@ -672,10 +762,19 @@ function toSummary(state: IndexState, textLimit: number): TranscriptSummary {
     // even though the underlying ring buffer (state.recentTurns) now holds up to
     // MAX_FLOW_TURNS for the flow view — see toFlowSummary below.
     recentTurns: state.recentTurns.slice(-MAX_RECENT_TURNS).map((turn) => turnToSummary(turn, SUMMARY_TEXT_LIMIT)),
-    totalUsage: state.totalUsage ? { ...state.totalUsage } : null,
-    subagentUsage: state.subagentUsage ? { ...state.subagentUsage } : null,
+    // Sibling-file usage (real subagent transcripts) and the inline-sidechain
+    // accumulator are sourced from disjoint bytes on disk — the main
+    // transcript file for the latter, `subagents/*.jsonl` for the former —
+    // so combining them by addition can't double-count the same event. The
+    // "no double counting" regression test in transcript-index.test.ts pins
+    // this for the one case that could plausibly conflate them: a subagent
+    // whose toolUseId is also tracked by the main-chain running heuristic
+    // still contributes its usage exactly once (RunningSubagent carries no
+    // usage field of its own to add).
+    totalUsage: combineUsage(state.totalUsage, fileUsage),
+    subagentUsage: combineUsage(state.subagentUsage, fileUsage),
     modelBreakdown: buildModelBreakdown(state.modelUsage),
-    subagents: toSubagentSummary(state),
+    subagents: toSubagentSummary(state, subagentRecords),
   };
 }
 
@@ -752,7 +851,7 @@ export class TranscriptIndexCache {
   private startRefresh(sessionId: string, transcriptPath: string): Promise<void> {
     const prior = this.cache.get(sessionId) ?? null;
 
-    const pending = refreshOne(prior?.state ?? null, transcriptPath)
+    const pending = refreshOne(prior?.state ?? null, transcriptPath, sessionId)
       .then((nextState) => {
         this.cache.set(sessionId, { state: nextState, fetchedAt: Date.now(), pending: null });
       })
