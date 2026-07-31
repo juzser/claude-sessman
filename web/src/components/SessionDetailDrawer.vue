@@ -83,13 +83,20 @@ async function loadFlow(sessionId: string): Promise<void> {
 
 function selectTab(tab: Tab): void {
   activeTab.value = tab;
-  if (tab === "flow" && session.value && flowLoadedForSessionId.value !== session.value.sessionId) {
-    void loadFlow(session.value.sessionId);
-  }
+  if (tab !== "flow" || !session.value) return;
+  // flowLoadedForSessionId is still null while the first fetch is in flight, so
+  // it alone would let a Turns<->Flow toggle fire a second request for the same
+  // session. Two concurrent fetches can resolve out of order, and the loser
+  // would win: the cross-session guard in loadFlow() can't help here, both
+  // requests carry the same sessionId.
+  if (flowState.value === "loading") return;
+  if (flowLoadedForSessionId.value === session.value.sessionId) return;
+  void loadFlow(session.value.sessionId);
 }
 
 function retryFlow(): void {
-  if (session.value) void loadFlow(session.value.sessionId);
+  // Same reason: a double-click on Retry must not open a second fetch.
+  if (session.value && flowState.value !== "loading") void loadFlow(session.value.sessionId);
 }
 
 function close(): void {
