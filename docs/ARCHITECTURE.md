@@ -1,0 +1,198 @@
+# Architecture
+
+## Data flow
+
+```
+~/.claude/sessions/*.json          ~/.claude/projects/<slug>/<id>.jsonl
+        │                                       │
+        ▼                                       ▼
+  registry.ts                          transcript.ts (stat only: size/mtime)
+  (parse + validate)                   transcript-index.ts (incremental JSONL scan)
+        │                                       │
+        ▼                                       │
+  enrich.ts ◄──────────── git-info.ts ──────────┤
+   (per session:                (per cwd:            (per session:
+    liveness, pid-reuse,         branch/dirty,         turn/gist/usage
+    tty, uptime)                 cached)                summary, cached)
+        │
+        ▼
+  sessions-service.ts (getSessions: enrich all, filter to alive unless includeDead)
+        │
+        ├─ GET  /api/sessions              ──► web: useSessions() initial load
+        ├─ GET  /api/sessions/:id/detail   ──► web: SessionDetailDrawer one-shot fetch
+        ├─ POST /api/sessions/:id/focus    ──► web: FocusButton
+        └─ WS   /ws  (broadcast on change) ──► web: ws-client (reconnect + backoff)
+                    ▲
+                    │ triggers a fresh getSessions() + broadcast
+             watcher.ts (fs.watch + 2s poll, both debounced together)
+                    │
+        watches ~/.claude/sessions/ for any change
+```
+
+`app.ts`/`server.ts` and the web app never read `~/.claude` directly —
+every read goes through `registry.ts`/`transcript.ts`/`transcript-index.ts`.
+
+## Module responsibilities
+
+`server/src/`:
+
+| Module | Responsibility | Invariant |
+|---|---|---|
+| `config.ts` | env → `AppConfig` | host defaults `127.0.0.1`, never `0.0.0.0` |
+| `registry.ts` | parse `~/.claude/sessions/*.json` | never throws; a bad file is skipped, not fatal |
+| `process-info.ts` | live pid → tty/lstart, liveness | `ps`/`kill(pid,0)` only, no writes |
+| `ctime.ts` | ctime string → epoch ms | caller must state UTC vs. local explicitly |
+| `pid-reuse.ts` | compare recorded vs. live start time | returns `"unknown"`, never guesses |
+| `git-info.ts` | per-cwd branch/dirty, cached | never blocks the caller (see below) |
+| `transcript.ts` | stat a transcript file | never reads its contents |
+| `transcript-index.ts` | incremental JSONL scan → summary | never re-reads consumed bytes (see below) |
+| `slug.ts` | cwd → transcript path | pure, no I/O |
+| `enrich.ts` | fold the above into `EnrichedSession` | runs process-info + transcript stat concurrently (`Promise.all`) |
+| `sessions-service.ts` | the one shared read path | same function backs REST and WS, so they can't disagree |
+| `terminal-focus.ts` | AppleScript-driven tab focus | tty passed as its own `execFile` argv element, never interpolated into script text |
+| `watcher.ts` | detect registry changes | always polls, even if `fs.watch` works |
+| `app.ts` | HTTP routes + local-origin guard | tty for focus is always server-resolved, never client-supplied |
+| `server.ts` | wires HTTP + WS onto one `http.Server` | one `getSessions()` call feeds every push |
+
+`web/src/`: see `CLAUDE.md`'s repo layout table; state ownership is covered
+below rather than repeated here.
+
+## Caching contract: stale-while-revalidate
+
+`GitInfoCache` (`git-info.ts`, TTL 5000ms) and `TranscriptIndexCache`
+(`transcript-index.ts`, TTL 1000ms) share one shape, even though they cache
+different things. Any change to either must preserve this decision tree —
+it's what makes `getSessions()` non-blocking regardless of how slow `git`
+or a transcript scan is:
+
+1. **No entry yet** for this key → kick off a background refresh, return
+   `null` immediately (nothing known yet).
+2. **Entry exists, still within the TTL** → return the cached value as-is;
+   no refresh triggered.
+2. **Entry exists, past the TTL, no refresh in flight** → kick off a
+   background refresh (fire-and-forget), but still return the *last-known*
+   value immediately — the caller never awaits the refresh.
+3. **Entry exists, past the TTL, a refresh already in flight** → do not
+   start a second one (deduped via a `pending` promise field); return the
+   last-known value immediately, same as above.
+
+The caller (`enrich.ts`) never `await`s either cache — both calls are
+synchronous reads that happen to also (sometimes) trigger async work on the
+side. A slow/hung `git` process or a multi-MB transcript scan can delay
+*that key's next refresh*, never the current `/api/sessions` response.
+
+## Caching contract: incremental transcript scan
+
+`transcript-index.ts`'s scan of a `.jsonl` transcript is the most
+regression-sensitive piece of this codebase — a change that breaks any of
+these turns an O(delta) tail into an O(file size) read on every poll tick,
+against files that can reach tens of MB:
+
+- Per-session state tracks a byte `offset` — the position immediately after
+  the last complete (newline-terminated) line successfully parsed.
+- A refresh only ever reads from `offset` onward
+  (`createReadStream({ start: offset })`), never from byte 0, unless a
+  rotation is detected (below).
+- Only newline-terminated lines advance `offset`. A trailing partial line
+  (no newline yet, e.g. the writer is mid-append) is buffered as `leftover`
+  and left unconsumed — it's re-read whole on the next tick, never
+  double-counted or parsed as if complete.
+- Memory use is bounded independent of file size: at most the current
+  read chunk plus one pending partial line is ever buffered.
+- **Rotation** — `stats.ino !== prior.ino || stats.size < prior.offset` —
+  is the *only* condition allowed to reset to `emptyState()` and rescan
+  from byte 0. Anything else re-scanning from 0 is a regression.
+  `transcript-index.test.ts` asserts this directly: it writes a sentinel
+  value into bytes already scanned and fails if the scanner ever re-reads
+  them.
+- `recentTurns` is a ring buffer capped at `MAX_RECENT_TURNS` (20): pushing
+  a 21st turn shifts the oldest out. Each turn's own `index` counts across
+  the *entire* transcript and is never reset by the ring buffer — so
+  `recentTurns[0].index` is not `0` once a transcript has more than 20
+  turns. See `docs/DATA-CONTRACT.md` for the full line-shape contract this
+  scan implements.
+- At most one scan is in flight per session (`pending`), so a watcher tick
+  and a concurrent `/detail` request against the same session dedupe into
+  one scan.
+
+## Watcher, poll, and liveness model
+
+`watcher.ts` always runs **both** an `fs.watch` listener and a poll
+fallback (`setInterval`, default 2000ms, `unref()`ed so it can't keep the
+process alive on its own) — `fs.watch` is wrapped in try/catch and known to
+miss changes on macOS in some cases, so the poll is not optional. Both
+paths funnel into one debounced `trigger()` (default 150ms), so a burst of
+near-simultaneous file writes collapses into a single broadcast.
+
+This same poll tick **doubles as the liveness recheck** the spec calls for
+(`server.ts`'s comment on `startServer`): every tick re-reads the registry
+and re-enriches every session from scratch, which re-derives `alive` fresh
+each time. There is no separate liveness timer.
+
+`alive` itself is `isProcessAlive(pid) && pidReuse !== "mismatch"`:
+
+- `isProcessAlive` — `process.kill(pid, 0)`; `EPERM` still counts as alive
+  (the process exists, it's just not owned by the caller).
+- `pidReuse` guards against a stale registry file outliving its process: it
+  compares the registry's recorded `procStart` (UTC ctime string) against a
+  freshly-queried `ps -o lstart` for whatever process currently holds that
+  pid (local time, no marker). `ctime.ts` parses each string in its actual
+  source timezone; `pid-reuse.ts` then compares within a tolerance
+  (default 2000ms) and reports `"match" | "mismatch" | "unknown"` — never
+  a plain boolean, since "couldn't determine" is a distinct, real case from
+  a confirmed mismatch. A `"mismatch"` means the pid now belongs to an
+  unrelated process (reused by the OS since the registry file was written)
+  and the session is treated as not alive even though `kill(pid, 0)`
+  succeeds. See `docs/DATA-CONTRACT.md` for the full timezone analysis.
+
+## Web-side state ownership
+
+- **`App.vue`** owns UI-local state: filter `query`, `sortMode`, `home`
+  (fetched once from `/api/health`, used only to shorten displayed paths),
+  a 1s `now` tick (drives relative-time labels like "updated 3s ago"), and
+  `selectedSessionId` (which session's detail drawer, if any, is open).
+- **`useSessions.ts`** owns the session list and WS connection lifecycle:
+  one REST fetch (`GET /api/sessions`) on mount for the initial list, then
+  `createSessionSocket` opens `/ws`. Every subsequent `{type:"sessions"}`
+  frame **replaces the whole list** — there is no incremental patching, so
+  the WS payload is the single source of truth for "currently alive
+  sessions" from the first frame onward. Reconnect/backoff state
+  (`connectionState`) is separate from the session data itself; `App.vue`
+  only uses it to show/hide a "lost connection, retrying…" banner.
+- **`SessionDetailDrawer.vue`** does **not** share the WS-fed session list.
+  Opening it (a non-null `sessionId` prop) triggers its own one-shot
+  `GET /api/sessions/:id/detail` fetch; the result is *not* refreshed by
+  later WS pushes while the drawer stays open — only a manual "Retry"
+  click, or closing and reopening the drawer, re-fetches. This is a
+  deliberate simplification (see "Known limitations" below), not an
+  accidental omission.
+  - **Stale-response guard**: `load(sessionId)` closes over the id it was
+    called with; once the `await fetchSessionDetail(sessionId)` resolves,
+    it checks `if (props.sessionId !== sessionId) return` before touching
+    any ref. This stops a slow response for a session the user has since
+    closed or switched away from from overwriting the drawer's current
+    (newer, or absent) state.
+
+## Known limitations / non-goals
+
+- The detail drawer is a snapshot as of when it was opened, not a live
+  view — it does not re-fetch on WS pushes while open.
+- No auth beyond the local-origin guard (`X-Sessman-Client` header +
+  `Origin` allowlist) — a defense against a random web page, not
+  general-purpose auth; this is a single-user local tool by design.
+- No terminal embedding or message-sending into a session — that's the
+  Phase 2 tmux-relay scope (`docs/ROADMAP.md`), not implemented here.
+- No prompt-turn flow graph in this codebase yet — that's M3
+  (`docs/ROADMAP.md`), tracked and worked on separately.
+- "Focus tab" only supports `Terminal.app`; other terminal emulators
+  return a focus-failed error rather than switching tabs (by design, not
+  a bug to fix here).
+- `server/src/transcript.ts`'s own doc comment is stale: it still says
+  content parsing is "out of scope for M1... see M2", but M2
+  (`transcript-index.ts`) already implements incremental content parsing.
+  Flagged here rather than edited, since this is a documentation-only pass.
+- `TranscriptSummary.complete` is hardcoded `true` on every non-null
+  summary — see `docs/DATA-CONTRACT.md`'s "known gap" note.
+- `watcher.test.ts`'s debounce test has been observed to fail once on a
+  timing fluke and pass cleanly on immediate rerun; treat a single failure
+  there as a flake worth rerunning, not a regression, unless it recurs.
