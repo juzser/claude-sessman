@@ -90,14 +90,50 @@ Assistant-line handling, once `message.content` is an array: each block
 with `type: "text"` sets `lastAssistantGist` and the current turn's `gist`
 (last one wins if there are several); each block with
 `type: "tool_use"` and a string `name` increments `toolCounts[name]` and
-`toolCallsTotal`, and appends `name` to the current turn's `toolNames`. The
-"current turn" is always `recentTurns[recentTurns.length - 1]` — the last
-user turn opened — regardless of how many assistant lines follow it.
+`toolCallsTotal` **unconditionally** (these are whole-transcript totals,
+never capped). The "current turn" is always
+`recentTurns[recentTurns.length - 1]` — the last user turn opened —
+regardless of how many assistant lines follow it.
 `message.model` (if a string) and `message.usage` (if present) are also
 applied on every assistant line, independent of the *turn* logic — they land
 even when no turn is open. They are **not** independent of the sidechain
 check: that check returns early, so a sidechain assistant line updates
 neither, per the table above.
+
+### Per-turn tool calls: cap, `toolCallsOmitted`, and target extraction
+
+Separately from the whole-transcript `toolCounts`/`toolCallsTotal` above,
+each `tool_use` block is also folded into the *current turn's* own
+`toolCalls` list — but only up to `MAX_TOOL_CALLS_PER_TURN` (40) entries.
+Once a turn's `toolCalls` already holds 40, every further `tool_use` block
+in that turn only increments `toolCallsOmitted` (a count, not a detail) —
+it still counts toward the global `toolCounts`/`toolCallsTotal`, but never
+appears in that turn's `toolCalls`, `toolNames`, or `filesTouched`.
+`toolNames` is derived from the turn's own (capped) `toolCalls`
+(`toolCalls.map(call => call.name)`), so it can under-count relative to
+`toolCallsTotal` once a turn hits the cap.
+
+Each recorded tool call's `target` is read from `block.input` by
+`extractToolTarget`, in this exact precedence — first field present wins,
+everything else falls through to `null`:
+
+1. `input.file_path` (string) → target, and this call counts as a
+   *file* target.
+2. `input.notebook_path` (string) → target, also a file target.
+3. `input.pattern` (string) → target, **not** a file target.
+4. `input.command` (string) → target, **not** a file target.
+5. none of the above → `target: null`.
+
+A non-null target longer than `MAX_TOOL_TARGET_LENGTH` (120 chars) is hard
+`.slice(0, 120)`'d — unlike `prompt`/`gist`, there is no companion
+`truncated` flag on a tool-call target; the string is just shortened.
+
+`filesTouched` is the turn's deduped, insertion-ordered list of *file*
+targets only (from the `file_path`/`notebook_path` branches above), built
+from a `Set` as calls are recorded. Because it's populated in the same
+"only if under the cap" branch as `toolCalls`, a file-tool call that lands
+past the 40-call cap is **not** added to `filesTouched` either, even though
+it was still counted in `toolCallsTotal`.
 
 `TokenUsage` is read from `message.usage`'s snake_case fields, each
 defaulting to `0` if missing or non-numeric:
@@ -116,13 +152,15 @@ second, separate limit — either limit being hit sets `truncated: true`.
 
 The display limit applies **only to the top-level `lastUserPrompt` and
 `lastAssistantGist`**: 400 chars via `getSummary`, 2000 via
-`getDetailSummary`. Per-turn text inside `recentTurns[]` is always rendered
-at 400 chars, whichever accessor is used — `toSummary()` passes
-`SUMMARY_TEXT_LIMIT` to `turnToSummary()` unconditionally and never forwards
-its own `textLimit` argument. So `/detail` does *not* give you longer
-per-turn prompts than the session list does. The raw 2000-char capture is
-retained in state, so surfacing more per turn is a one-line change, but no
-caller gets it today.
+`getDetailSummary`. Per-turn text inside `recentTurns[]`/`turns[]` is
+always rendered at 400 chars, no matter which accessor produced it —
+`toSummary()` passes `SUMMARY_TEXT_LIMIT` to `turnToSummary()`
+unconditionally and never forwards its own `textLimit` argument, and
+`toFlowSummary()` (the `/flow` payload) does the same: it doesn't take a
+`textLimit` parameter at all and always passes `SUMMARY_TEXT_LIMIT`. So
+neither `/detail` nor `/flow` gives you longer per-turn prompts than the
+plain session list does. The raw 2000-char capture is retained in state, so
+surfacing more per turn is a one-line change, but no caller gets it today.
 
 The scanner holds a single ring buffer (`state.recentTurns`) capped at
 `MAX_FLOW_TURNS` (100 entries, oldest dropped first); each turn's `index`
@@ -133,6 +171,25 @@ only ever exposes the *last* `MAX_RECENT_TURNS` (20) turns of that buffer
 (`state.recentTurns.slice(-MAX_RECENT_TURNS)`); `GET /api/sessions/:id/flow`
 exposes the whole retained buffer instead, oldest first — see
 `docs/API.md` for both response shapes.
+
+### Flow payload (`FlowSummary`, `GET /api/sessions/:id/flow`)
+
+```ts
+{
+  turnCount: number;          // state.turnCount — total turns ever seen,
+                               // including any since evicted from the buffer
+  retainedTurnCount: number;  // state.recentTurns.length — <= MAX_FLOW_TURNS (100)
+  turnsDropped: boolean;      // turnCount > retainedTurnCount
+  turns: TranscriptTurn[];    // state.recentTurns, oldest first, unsliced
+}
+```
+
+`turns` is the entire retained ring buffer (up to 100 entries), not just the
+last 20 `/detail` exposes — so a transcript with, say, 60 turns returns all
+60 via `/flow` but only the most recent 20 via `/detail`. Each entry is the
+same `TranscriptTurn` shape documented above (`prompt`/`gist` truncation,
+the tool-call cap, `filesTouched`), oldest-first, matching `recentTurns`'
+own insertion order rather than being reversed.
 
 **Known gap**: `TranscriptSummary.complete` is hardcoded `true` on every
 non-null summary produced by `toSummary()` — there is no scan-in-progress
