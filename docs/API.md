@@ -68,7 +68,8 @@ be opened).
 // 200
 {
   session: EnrichedSession;
-  transcriptDetail: TranscriptSummary | null; // 2000-char captures, not 400 — see docs/DATA-CONTRACT.md
+  transcriptDetail: TranscriptSummary | null; // 2000-char lastUserPrompt/lastAssistantGist, not 400.
+                                              // recentTurns[] stays at 400 — see docs/DATA-CONTRACT.md
 }
 ```
 

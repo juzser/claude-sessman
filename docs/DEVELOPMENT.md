@@ -39,7 +39,7 @@ All root scripts fan out to both workspaces (`server/package.json`,
 
 | Root script | Does |
 |---|---|
-| `npm run dev` | Runs `server`'s and `web`'s `dev` scripts concurrently (`&& … & wait`), so both watch/reload at once |
+| `npm run dev` | Runs `server`'s and `web`'s `dev` scripts concurrently (`& … & wait`), so both watch/reload at once |
 | `npm run build` | `server` build, then `web` build (sequential) |
 | `npm test` | `server` tests, then `web` tests (sequential) |
 | `npm run typecheck` | `server` typecheck, then `web` typecheck (sequential) |

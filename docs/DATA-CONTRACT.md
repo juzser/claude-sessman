@@ -81,7 +81,7 @@ turn or a gist.
 |---|---|---|
 | `isSidechain: true` (any `type`) | excluded | only the `lastEntryAt` update above applies; no turn, gist, usage, or tool count |
 | `type: "user"`, `isMeta: true` | excluded | skipped entirely (checked after the sidechain check) |
-| `type: "user"`, `message.content` is a non-empty `string`, or an array with ≥1 `{type:"text", text:string}` block | new turn | increments `turnCount`; opens a new entry in `recentTurns` with this text as `prompt` and `at: timestamp` |
+| `type: "user"`, `message.content` is a `string` (empty included — the code does not special-case `""`), or an array with ≥1 `{type:"text", text:string}` block | new turn | increments `turnCount`; opens a new entry in `recentTurns` with this text as `prompt` and `at: timestamp` |
 | `type: "user"`, content is tool-result-only, image-only, or otherwise has no text | not a turn | no-op beyond the `lastEntryAt` update |
 | `type: "assistant"`, `message.content` is an array | updates current turn | does **not** open a new turn — attaches to the most-recently-opened one (see below) |
 | any other `type` (`"system"`, attachment/agent-name/custom-title lines, …) | ignored | not part of the summary |
@@ -94,7 +94,10 @@ with `type: "text"` sets `lastAssistantGist` and the current turn's `gist`
 "current turn" is always `recentTurns[recentTurns.length - 1]` — the last
 user turn opened — regardless of how many assistant lines follow it.
 `message.model` (if a string) and `message.usage` (if present) are also
-applied on every assistant line, independent of the sidechain/turn logic.
+applied on every assistant line, independent of the *turn* logic — they land
+even when no turn is open. They are **not** independent of the sidechain
+check: that check returns early, so a sidechain assistant line updates
+neither, per the table above.
 
 `TokenUsage` is read from `message.usage`'s snake_case fields, each
 defaulting to `0` if missing or non-numeric:
@@ -109,8 +112,17 @@ contextTokens        // inputTokens + cacheReadTokens + cacheCreationTokens
 
 Text captured for `prompt`/`gist` collapses whitespace and is capped at
 2000 chars internally (`MAX_CAPTURE_LENGTH`); display-time truncation is a
-second, separate limit (400 chars for `getSummary`, 2000 for
-`getDetailSummary`) — either limit being hit sets `truncated: true`.
+second, separate limit — either limit being hit sets `truncated: true`.
+
+The display limit applies **only to the top-level `lastUserPrompt` and
+`lastAssistantGist`**: 400 chars via `getSummary`, 2000 via
+`getDetailSummary`. Per-turn text inside `recentTurns[]` is always rendered
+at 400 chars, whichever accessor is used — `toSummary()` passes
+`SUMMARY_TEXT_LIMIT` to `turnToSummary()` unconditionally and never forwards
+its own `textLimit` argument. So `/detail` does *not* give you longer
+per-turn prompts than the session list does. The raw 2000-char capture is
+retained in state, so surfacing more per turn is a one-line change, but no
+caller gets it today.
 
 `recentTurns` is a ring buffer capped at 20 entries (oldest dropped first),
 but each turn's `index` counts across the *whole* transcript and is never
