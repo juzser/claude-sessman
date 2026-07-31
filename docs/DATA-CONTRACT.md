@@ -167,11 +167,14 @@ descending, then `model` ascending as a tiebreak, for a stable render order.
 `calls` counts distinct assistant **messages**, deduped by `message.id` using
 the same rule as `totalUsage` above — a message split across several lines
 increments `calls` once, not once per line. Summing every entry's four token
-fields across the whole array always equals `totalUsage` — an assistant
-message with usage but no string `model` contributes to `totalUsage` but has
-no `modelBreakdown` entry to attribute to; a message with a string `model`
-but no usable `usage` still increments that model's `calls` (it happened),
-contributing `0` to all four token fields.
+fields across the whole array equals `totalUsage` **only when every
+usage-bearing message named a model**: an assistant message carrying usage
+but no string `model` is folded into `totalUsage` and has no `modelBreakdown`
+entry to attribute to, so the array sums to `totalUsage` minus that usage.
+Do not treat the two as an invariant a consumer can assert on. In the other
+direction, a message with a string `model` but no usable `usage` still
+increments that model's `calls` (it happened), contributing `0` to all four
+token fields.
 
 **`subagents: SubagentSummary`** — `{ sidechainLineCount, lastSidechainAt,
 running }`:
