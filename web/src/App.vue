@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from "vue";
 import SessionCard from "./components/SessionCard.vue";
+import SessionDetailDrawer from "./components/SessionDetailDrawer.vue";
 import { useSessions } from "./composables/useSessions";
 import { filterSessions, sortSessions, type SortMode } from "./lib/sort-filter";
 
@@ -10,6 +11,7 @@ const query = ref("");
 const sortMode = ref<SortMode>("recent");
 const home = ref("");
 const now = ref(Date.now());
+const selectedSessionId = ref<string | null>(null);
 
 let tickTimer: ReturnType<typeof setInterval> | null = null;
 
@@ -112,8 +114,15 @@ const showDisconnectBanner = computed(
           :session="session"
           :home="home"
           :now="now"
+          @select="selectedSessionId = $event"
         />
       </div>
     </main>
+
+    <SessionDetailDrawer
+      :session-id="selectedSessionId"
+      :home="home"
+      @close="selectedSessionId = null"
+    />
   </div>
 </template>

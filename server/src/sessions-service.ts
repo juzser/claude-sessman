@@ -1,6 +1,7 @@
 import { enrichSessions } from "./enrich.js";
 import type { GitInfoCache } from "./git-info.js";
 import { readSessionRegistry } from "./registry.js";
+import type { TranscriptIndexCache } from "./transcript-index.js";
 import type { EnrichedSession } from "./types.js";
 
 export interface SessionsServiceConfig {
@@ -20,12 +21,14 @@ export interface GetSessionsOptions {
 export async function getSessions(
   config: SessionsServiceConfig,
   gitCache: GitInfoCache,
+  transcriptIndexCache: TranscriptIndexCache,
   options: GetSessionsOptions = {},
 ): Promise<EnrichedSession[]> {
   const raws = await readSessionRegistry(config.sessionsDir);
   const enriched = await enrichSessions(raws, {
     claudeProjectsDir: config.projectsDir,
     gitCache,
+    transcriptIndexCache,
   });
 
   return options.includeDead ? enriched : enriched.filter((s) => s.alive);

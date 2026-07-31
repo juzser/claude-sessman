@@ -5,6 +5,7 @@ import { createApp } from "./app.js";
 import type { AppConfig } from "./config.js";
 import { GitInfoCache } from "./git-info.js";
 import { getSessions } from "./sessions-service.js";
+import { TranscriptIndexCache } from "./transcript-index.js";
 import { watchSessionsDir, type SessionWatcher } from "./watcher.js";
 
 export interface RunningServer {
@@ -30,7 +31,10 @@ function broadcastPayload(wss: WebSocketServer, payload: string): void {
  */
 export function startServer(config: AppConfig): RunningServer {
   const gitCache = new GitInfoCache();
-  const app = createApp(config, gitCache);
+  const transcriptIndexCache = new TranscriptIndexCache();
+  const app = createApp(config, gitCache, transcriptIndexCache, {
+    selfOrigin: `http://${config.host}:${config.port}`,
+  });
 
   const httpServer = serve({
     fetch: app.fetch,
@@ -41,12 +45,12 @@ export function startServer(config: AppConfig): RunningServer {
   const wss = new WebSocketServer({ server: httpServer, path: "/ws" });
 
   const broadcastCurrentSessions = async (): Promise<void> => {
-    const sessions = await getSessions(config, gitCache);
+    const sessions = await getSessions(config, gitCache, transcriptIndexCache);
     broadcastPayload(wss, JSON.stringify({ type: "sessions", data: sessions }));
   };
 
   wss.on("connection", (ws) => {
-    getSessions(config, gitCache)
+    getSessions(config, gitCache, transcriptIndexCache)
       .then((sessions) => {
         if (ws.readyState === WebSocket.OPEN) {
           ws.send(JSON.stringify({ type: "sessions", data: sessions }));

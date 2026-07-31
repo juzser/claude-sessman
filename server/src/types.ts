@@ -1,3 +1,5 @@
+import type { TranscriptSummary } from "./transcript-index.js";
+
 /** A parsed, validated record from ~/.claude/sessions/<pid>.json. */
 export interface RawSessionRecord {
   pid: number;
@@ -38,5 +40,7 @@ export interface EnrichedSession extends RawSessionRecord {
   transcriptPath: string;
   transcriptSize: number | null;
   transcriptMtime: number | null;
+  /** Null until the transcript index has completed its first scan of this session. */
+  transcriptSummary: TranscriptSummary | null;
   git: GitInfo | null;
 }
