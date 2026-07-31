@@ -82,7 +82,7 @@ const showDisconnectBanner = computed(
           v-model="query"
           type="text"
           placeholder="Filter by name, path, or branch…"
-          class="w-56 rounded-lg border border-slate-700 bg-slate-900 px-3 py-1.5 text-sm placeholder:text-slate-500 focus:border-slate-500 focus:outline-none"
+          class="w-56 rounded-lg border border-slate-700 bg-slate-900 px-3 py-1.5 text-sm placeholder:text-slate-500 focus:border-slate-500 focus:outline-hidden"
         />
         <button
           type="button"
