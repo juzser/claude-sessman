@@ -4,7 +4,23 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createApp } from "./app.js";
 import { GitInfoCache } from "./git-info.js";
+import type { FocusResult, FocusRunner } from "./terminal-focus.js";
 import { TranscriptIndexCache } from "./transcript-index.js";
+
+function makeFakeFocusRunner(result: FocusResult): { runner: FocusRunner; calls: string[] } {
+  const calls: string[] = [];
+  return {
+    calls,
+    runner: {
+      focusTty(tty: string) {
+        calls.push(tty);
+        return Promise.resolve(result);
+      },
+    },
+  };
+}
+
+const CLIENT_HEADERS = { "X-Sessman-Client": "1" };
 
 describe("createApp", () => {
   let sessionsDir: string;
@@ -102,6 +118,52 @@ describe("createApp", () => {
   it("GET /api/sessions/:sessionId/detail returns 404 for an unknown session id", async () => {
     const app = createApp({ sessionsDir, projectsDir }, new GitInfoCache(), transcriptIndexCache);
     const res = await app.request("/api/sessions/no-such-session/detail");
+    expect(res.status).toBe(404);
+  });
+
+  it("POST /api/sessions/:sessionId/focus rejects a session with no resolvable tty, without invoking the runner", async () => {
+    const sessionId = "no-tty-session";
+    await writeFile(
+      path.join(sessionsDir, "no-tty.json"),
+      JSON.stringify({
+        // A pid this large should not correspond to a live process (or, on
+        // the off chance it does, ps won't report a controlling tty for it
+        // in this test environment either way — the resolved tty is null).
+        pid: 2 ** 30,
+        sessionId,
+        cwd: "/tmp/no-tty-cwd",
+        startedAt: Date.now(),
+        status: "busy",
+      }),
+    );
+
+    const { runner, calls } = makeFakeFocusRunner({ ok: true });
+    const app = createApp({ sessionsDir, projectsDir }, new GitInfoCache(), transcriptIndexCache, {
+      focusRunner: runner,
+    });
+
+    const res = await app.request(`/api/sessions/${sessionId}/focus`, {
+      method: "POST",
+      headers: CLIENT_HEADERS,
+    });
+
+    expect(res.status).toBeGreaterThanOrEqual(400);
+    expect(res.status).toBeLessThan(500);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toBeTruthy();
+    expect(calls).toEqual([]);
+  });
+
+  it("POST /api/sessions/:sessionId/focus returns 404 for an unknown session id", async () => {
+    const { runner } = makeFakeFocusRunner({ ok: true });
+    const app = createApp({ sessionsDir, projectsDir }, new GitInfoCache(), transcriptIndexCache, {
+      focusRunner: runner,
+    });
+
+    const res = await app.request("/api/sessions/no-such-session/focus", {
+      method: "POST",
+      headers: CLIENT_HEADERS,
+    });
     expect(res.status).toBe(404);
   });
 });
