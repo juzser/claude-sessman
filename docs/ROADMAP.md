@@ -2,13 +2,15 @@
 
 Milestone list and the decisions behind each, for future work. Terse by design.
 
-## M1 (this PR) — session dashboard
+See also: [`CLAUDE.md`](../CLAUDE.md) (repo map), [`docs/ARCHITECTURE.md`](ARCHITECTURE.md) (data flow), [`docs/API.md`](API.md) and [`docs/DATA-CONTRACT.md`](DATA-CONTRACT.md) (what M1/M2 actually shipped).
+
+## M1 (done) — session dashboard
 - Live session registry (`~/.claude/sessions/<pid>.json`) parsed, validated, enriched.
 - Card grid web dashboard: identicon, name/cwd, git branch, status dot, uptime, live "updated Ns ago".
 - Server: Node 22 + TypeScript + Hono + `ws`. Web: Vite + Vue 3 + TypeScript + Tailwind.
 - No embedded terminal, no message sending, no transcript rendering.
 
-## M2 — transcript enrichment
+## M2 (done) — transcript enrichment
 - [x] Read transcripts (`~/.claude/projects/<slug>/<sessionId>.jsonl`) incrementally/tail-only — files reach 19 MB, never load whole files. Byte-offset/size/inode tracked per session; rotation/truncation detected and rescanned from 0; stale-while-revalidate cache so a read never blocks on a scan.
 - [x] Surface: last user prompt, last assistant gist, model, token/context usage, tool-call counts — wired into `EnrichedSession.transcriptSummary` (`null` until the first scan completes) and into `GET /api/sessions/:sessionId/detail` for the fuller (2000-char) view.
 - [x] "Focus terminal tab" action via AppleScript (`POST /api/sessions/:sessionId/focus`), targeting the session's `tty` resolved server-side.
@@ -17,7 +19,8 @@ Milestone list and the decisions behind each, for future work. Terse by design.
 
 **M2 complete** (server + web). M3 consumes the same `recentTurns` last-20-turns buffer already returned by `/detail` — the turn list is deliberately rendered by its own component (`TranscriptTurnList.vue`) rather than inlined in the drawer, so M3 can reuse or replace it with a flow-graph rendering of the same data.
 
-## M3 — flow view
+## M3 (in progress) — flow view
+- Not merged yet — implemented on a side branch, spec below. Nothing in this repo's `master`-derived docs describes a flow view or a `/flow` endpoint as shipped.
 - Decided spec: **one node = one user prompt turn** (not one tool call).
 - Each node shows a concise summary of the turn, including the gist of Claude's reply.
 - Click to expand a node → reveals the tool calls / files touched inside that turn.
@@ -36,4 +39,4 @@ Milestone list and the decisions behind each, for future work. Terse by design.
 - Long-term goal: drive everything from the web page.
 
 ## Runtime target
-- Node 22 (`.nvmrc` pins `22.23.1`).
+- Node 22 (`.nvmrc` pins `22.23.1`). Full setup: [`docs/DEVELOPMENT.md`](DEVELOPMENT.md).
