@@ -148,8 +148,25 @@ attribute usage within a multi-line message.
 This dedup state (`message.id` → whether its call/usage has been counted) is
 kept in memory for the life of the indexed file and never evicted — on the
 order of a thousand distinct assistant message ids for a large real
-transcript, each a small fixed-size entry, so the memory cost is acceptable
-for a process-lifetime cache.
+transcript, each a small fixed-size entry. It must live on `IndexState` rather
+than inside a single parse run: the indexer is incremental, the poll interval
+is short, and a writer emits one line per content block, so a multi-line
+message routinely straddles a poll boundary and its later lines are parsed
+with the earlier ones' state already committed. Scoping the map to one parse
+run would silently restore the per-line double count.
+
+Bounding it, honestly: that "thousand entries" figure is per transcript, and
+`TranscriptIndexCache` holds one `IndexState` per `sessionId` it has ever been
+asked about — including dead sessions, since callers pass `includeDead: true`
+— and never evicts an entry. So the real ceiling is a thousand entries times
+however many sessions the process has seen since it started, not a thousand
+overall. Every other field on `IndexState` is either O(1) or explicitly capped
+(`recentTurns` by `MAX_FLOW_TURNS`, `pendingSubagents` by
+`MAX_RUNNING_SUBAGENTS`); this is the first that grows with transcript length,
+so it makes the missing session-level eviction matter in a way it did not
+before. The session cache's unbounded growth is pre-existing and out of scope
+here; capping it (the `MAX_RUNNING_SUBAGENTS` eviction is a usable template)
+is the fix, not capping this map.
 
 `SummedUsage` intentionally has **no `contextTokens` field**, unlike
 `TokenUsage`. `contextTokens` is `input + cacheRead + cacheCreation` *of one

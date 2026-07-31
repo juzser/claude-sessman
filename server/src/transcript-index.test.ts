@@ -753,6 +753,44 @@ describe("TranscriptIndexCache", () => {
       ]);
     });
 
+    it("folds a message.id once even when its lines arrive across two separate polls", async () => {
+      // The common case in production, not an edge case: the poll interval is
+      // ~2s and a writer emits one line per content block as it goes, so a
+      // multi-line message routinely straddles a poll boundary. Deduping only
+      // works here because `assistantMessageDedup` lives on IndexState and is
+      // carried over by the incremental path; a Map local to one parse run
+      // would pass every other test in this file and double-count in real use.
+      const usage = { input_tokens: 10, output_tokens: 20, cache_read_input_tokens: 30, cache_creation_input_tokens: 40 };
+      const expectedUsage = { inputTokens: 10, outputTokens: 20, cacheReadTokens: 30, cacheCreationTokens: 40 };
+      const expectedBreakdown = [{ model: "synthetic-model-1", calls: 1, ...expectedUsage }];
+
+      const firstHalf = [
+        assistantMessageBlockLine("msg_synthetic_split", { type: "thinking", thinking: "synthetic reasoning" }, "2026-01-01T00:00:00.000Z", usage),
+        assistantMessageBlockLine("msg_synthetic_split", { type: "text", text: "synthetic reply" }, "2026-01-01T00:00:01.000Z", usage),
+      ];
+      await writeFile(transcriptPath, firstHalf.map((l) => `${l}\n`).join(""));
+
+      const cache = new TranscriptIndexCache();
+      await cache.refreshAndWait(sessionId, transcriptPath);
+      // Already folded once by the end of poll 1.
+      expect(cache.getSummary(sessionId, transcriptPath)?.totalUsage).toEqual(expectedUsage);
+      expect(cache.getSummary(sessionId, transcriptPath)?.modelBreakdown).toEqual(expectedBreakdown);
+
+      const rest = assistantMessageBlockLine(
+        "msg_synthetic_split",
+        { type: "tool_use", name: "synthetic-tool", input: { synthetic: true } },
+        "2026-01-01T00:00:02.000Z",
+        usage,
+      );
+      await appendFile(transcriptPath, `${rest}\n`);
+      await cache.refreshAndWait(sessionId, transcriptPath);
+
+      // Poll 2 sees the same id again and must contribute nothing.
+      const summary = cache.getSummary(sessionId, transcriptPath);
+      expect(summary?.totalUsage).toEqual(expectedUsage);
+      expect(summary?.modelBreakdown).toEqual(expectedBreakdown);
+    });
+
     it("still folds a message.id once even when a tool_result line interrupts its content blocks (no contiguous-run shortcut)", async () => {
       const usage = { input_tokens: 5, output_tokens: 6, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 };
       const lines = [
