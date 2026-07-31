@@ -101,13 +101,28 @@ above), so nothing in the running UI uses this mapping today —
 `SessionCard.vue` shows connection state as a plain colored dot
 (`bg-emerald-400`/`bg-amber-400`/`bg-slate-500`), not a lozenge. This table
 records the intended mapping for when that primitive is vendored, so the
-visual-adoption PR doesn't have to invent one:
+visual-adoption PR doesn't have to invent one.
 
-| Domain status | Lozenge |
-|---|---|
-| `connected` | success-subtle |
-| `reconnecting` | warning-subtle |
-| `closed` | danger-subtle |
+The domain statuses are exactly the members of `ConnectionState` in
+`web/src/lib/ws-client.ts` (`"connecting" | "open" | "reconnecting" |
+"closed"`), and all four are mapped, because the socket can report any of
+them:
+
+| Domain status | Lozenge | Why |
+|---|---|---|
+| `connecting` | info-subtle | First connect in flight (`attempt === 0`). "Informational, in progress" - nothing is degraded yet. |
+| `open` | success-subtle | Live socket. "Active, live". |
+| `reconnecting` | warning-subtle | Every retry after a drop. Degraded but still trying: not `danger` (nothing has failed for good) and not `info` (it has to read differently from a first connect). |
+| `closed` | neutral-subtle | `setState("closed")` is reached only from the client's own `close()`, a deliberate teardown rather than a failure, so it belongs to "default, unset" and not to `danger`. |
+
+**Carry-forward for the visual PR.** `App.vue`'s `showDisconnectBanner`
+currently treats `closed` and `reconnecting` identically ("Lost connection,
+retrying"), which contradicts the `closed` row above. That is invisible
+today only by coincidence: the sole `close()` call site is
+`useSessions.ts`'s `onUnmounted` hook, so by the time the state is `closed`
+the component tree is already being torn down and the banner never paints.
+Split the two states when the banner is restyled instead of relying on that
+coincidence.
 
 ## Reference pages (normative)
 
@@ -158,7 +173,9 @@ restyled under this design system yet.
   once every element that relied on the implicit default gets an explicit
   `border-line` (or other token) utility instead.
 
-- **2026-07-31 — No shadcn bridge in this repo's tokens file.** The
+- **2026-07-31 — Shadcn bridge present but unconsumed.** The bridge block
+  ships in this repo's tokens file (it is part of the byte-identical master
+  copy); nothing here reads it. Do not rebuild it. The
   reference adopter (hans-dashboard) absorbed most of the HDS 3.0.0 upgrade
   cost through a shadcn-vue "bridge" block in its tokens file, which maps
   shadcn's own CSS variable names (`--background`, `--primary`, ...) onto
