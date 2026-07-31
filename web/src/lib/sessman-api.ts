@@ -1,4 +1,4 @@
-import type { EnrichedSession, TranscriptSummary } from "./types";
+import type { EnrichedSession, FlowSummary, TranscriptSummary } from "./types";
 
 /** Required on every non-GET request; enforced by the server's local-origin guard (server/src/app.ts). */
 export const SESSMAN_CLIENT_HEADER = "X-Sessman-Client";
@@ -109,6 +109,49 @@ export async function fetchSessionDetail(
   if (res.ok) {
     const body = (await res.json()) as SessionDetailResponseBody;
     return { ok: true, session: body.session, transcriptDetail: body.transcriptDetail };
+  }
+
+  if (res.status === 404) {
+    return {
+      ok: false,
+      reason: "not-found",
+      message: "This session is no longer running.",
+    };
+  }
+
+  return {
+    ok: false,
+    reason: "unknown",
+    message: `Unexpected server response (${res.status}).`,
+  };
+}
+
+export type FlowFailureReason = "not-found" | "network-error" | "unknown";
+
+export type FlowOutcome =
+  | { ok: true; session: EnrichedSession; transcriptFlow: FlowSummary | null }
+  | { ok: false; reason: FlowFailureReason; message: string };
+
+interface SessionFlowResponseBody {
+  session: EnrichedSession;
+  transcriptFlow: FlowSummary | null;
+}
+
+/** GETs /api/sessions/:sessionId/flow, mapping the 404 (session vanished) case distinctly from other failures. */
+export async function fetchSessionFlow(
+  sessionId: string,
+  fetchImpl: FetchLike = fetch as unknown as FetchLike,
+): Promise<FlowOutcome> {
+  let res: FetchResponseLike;
+  try {
+    res = await fetchImpl(`/api/sessions/${encodeURIComponent(sessionId)}/flow`);
+  } catch {
+    return { ok: false, reason: "network-error", message: NETWORK_ERROR_MESSAGE };
+  }
+
+  if (res.ok) {
+    const body = (await res.json()) as SessionFlowResponseBody;
+    return { ok: true, session: body.session, transcriptFlow: body.transcriptFlow };
   }
 
   if (res.status === 404) {
