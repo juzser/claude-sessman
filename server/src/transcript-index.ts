@@ -1,5 +1,5 @@
-import { createReadStream } from "node:fs";
 import { stat } from "node:fs/promises";
+import { streamAppend } from "./jsonl-stream.js";
 
 const DEFAULT_TTL_MS = 1000;
 const SUMMARY_TEXT_LIMIT = 400;
@@ -604,42 +604,6 @@ function applyLine(state: IndexState, rawLine: string): void {
 
   if (!isRecord(parsed)) return; // unknown-shaped line (e.g. a bare array)
   applyEntry(state, parsed);
-}
-
-/**
- * Streams the bytes of `filePath` starting at `startOffset`, calling `onLine`
- * for every complete (newline-terminated) line found. Returns the byte offset
- * immediately after the last complete line — a trailing partial line (no
- * newline yet) is left unconsumed so it's re-read whole next time. Never
- * buffers more than the current chunk plus one pending partial line.
- */
-function streamAppend(
-  filePath: string,
-  startOffset: number,
-  onLine: (line: string) => void,
-): Promise<number> {
-  return new Promise((resolve, reject) => {
-    const stream = createReadStream(filePath, { start: startOffset });
-    let leftover: Buffer<ArrayBufferLike> = Buffer.alloc(0);
-    let offset = startOffset;
-
-    stream.on("data", (chunk) => {
-      const data = typeof chunk === "string" ? Buffer.from(chunk) : chunk;
-      const buf = leftover.length ? Buffer.concat([leftover, data]) : data;
-      let lineStart = 0;
-      for (;;) {
-        const newlineIndex = buf.indexOf(0x0a, lineStart);
-        if (newlineIndex === -1) break;
-        const lineBuf = buf.subarray(lineStart, newlineIndex);
-        onLine(lineBuf.toString("utf8"));
-        offset += newlineIndex - lineStart + 1;
-        lineStart = newlineIndex + 1;
-      }
-      leftover = buf.subarray(lineStart);
-    });
-    stream.on("end", () => resolve(offset));
-    stream.on("error", reject);
-  });
 }
 
 async function refreshOne(prior: IndexState | null, transcriptPath: string): Promise<IndexState | null> {
