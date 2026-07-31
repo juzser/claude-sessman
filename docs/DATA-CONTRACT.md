@@ -124,10 +124,15 @@ per-turn prompts than the session list does. The raw 2000-char capture is
 retained in state, so surfacing more per turn is a one-line change, but no
 caller gets it today.
 
-`recentTurns` is a ring buffer capped at 20 entries (oldest dropped first),
-but each turn's `index` counts across the *whole* transcript and is never
-reset — so once a transcript has more than 20 turns, `recentTurns[0].index`
-is not `0`.
+The scanner holds a single ring buffer (`state.recentTurns`) capped at
+`MAX_FLOW_TURNS` (100 entries, oldest dropped first); each turn's `index`
+counts across the *whole* transcript and is never reset — so once a
+transcript has more than 100 turns, the buffer's oldest retained turn no
+longer has `index: 0`. `GET /api/sessions/:id/detail`'s `recentTurns` field
+only ever exposes the *last* `MAX_RECENT_TURNS` (20) turns of that buffer
+(`state.recentTurns.slice(-MAX_RECENT_TURNS)`); `GET /api/sessions/:id/flow`
+exposes the whole retained buffer instead, oldest first — see
+`docs/API.md` for both response shapes.
 
 **Known gap**: `TranscriptSummary.complete` is hardcoded `true` on every
 non-null summary produced by `toSummary()` — there is no scan-in-progress

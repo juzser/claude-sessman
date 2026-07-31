@@ -105,12 +105,16 @@ against files that can reach tens of MB:
   `transcript-index.test.ts` asserts this directly: it writes a sentinel
   value into bytes already scanned and fails if the scanner ever re-reads
   them.
-- `recentTurns` is a ring buffer capped at `MAX_RECENT_TURNS` (20): pushing
-  a 21st turn shifts the oldest out. Each turn's own `index` counts across
-  the *entire* transcript and is never reset by the ring buffer — so
-  `recentTurns[0].index` is not `0` once a transcript has more than 20
-  turns. See `docs/DATA-CONTRACT.md` for the full line-shape contract this
-  scan implements.
+- The scanner holds a single ring buffer (`state.recentTurns`) capped at
+  `MAX_FLOW_TURNS` (100): pushing a 101st turn shifts the oldest out. Each
+  turn's own `index` counts across the *entire* transcript and is never
+  reset by the ring buffer — so the buffer's oldest retained turn no longer
+  has `index: 0` once a transcript has more than 100 turns.
+  `GET /api/sessions/:id/detail` (and `TranscriptSummary.recentTurns`) only
+  ever exposes the *last* `MAX_RECENT_TURNS` (20) turns of that buffer;
+  `GET /api/sessions/:id/flow` exposes the whole retained buffer instead.
+  See `docs/DATA-CONTRACT.md` for the full line-shape contract this scan
+  implements and `docs/API.md` for both response shapes.
 - At most one scan is in flight per session (`pending`), so a watcher tick
   and a concurrent `/detail` request against the same session dedupe into
   one scan.
