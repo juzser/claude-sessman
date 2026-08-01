@@ -4,6 +4,17 @@ import type { Summarizer, TurnSummary } from "./summarizer.js";
 
 type TurnSummaryMap = Record<string, TurnSummary>;
 
+/**
+ * Upper bound on how many turn summaries a single session's cache file keeps.
+ * transcript-index.ts only ever reads the RECENT_SUMMARY_COUNT (3) most
+ * recent turns, so anything beyond a small margin above that is dead weight
+ * that would otherwise grow the file forever over a long-running session.
+ * The margin (well above 3) is generous on purpose: it tolerates turns being
+ * summarized out of strict order without evicting one the next read still
+ * wants.
+ */
+const MAX_CACHED_TURNS_PER_SESSION = 20;
+
 export interface SummaryCache {
   getTurn(sessionId: string, turnIndex: number): Promise<TurnSummary | null>;
   setTurn(sessionId: string, turnIndex: number, summary: TurnSummary): Promise<void>;
@@ -38,6 +49,21 @@ export function createSummaryCache(cacheDir: string): SummaryCache {
     }
   }
 
+  function pruneToRecent(map: TurnSummaryMap): TurnSummaryMap {
+    const keys = Object.keys(map);
+    if (keys.length <= MAX_CACHED_TURNS_PER_SESSION) return map;
+
+    const kept = keys
+      .map((key) => Number(key))
+      .sort((a, b) => b - a)
+      .slice(0, MAX_CACHED_TURNS_PER_SESSION);
+    const prunedMap: TurnSummaryMap = {};
+    for (const turnIndex of kept) {
+      prunedMap[String(turnIndex)] = map[String(turnIndex)];
+    }
+    return prunedMap;
+  }
+
   function withWriteLock(sessionId: string, fn: () => Promise<void>): Promise<void> {
     const previous = writeQueues.get(sessionId) ?? Promise.resolve();
     const next = previous.then(fn, fn);
@@ -59,7 +85,7 @@ export function createSummaryCache(cacheDir: string): SummaryCache {
         await mkdir(summariesDir, { recursive: true });
         const map = await readMap(sessionId);
         map[String(turnIndex)] = summary;
-        await writeFile(filePathFor(sessionId), JSON.stringify(map), "utf8");
+        await writeFile(filePathFor(sessionId), JSON.stringify(pruneToRecent(map)), "utf8");
       });
     },
   };

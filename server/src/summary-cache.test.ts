@@ -64,6 +64,37 @@ describe("createSummaryCache", () => {
     expect(first).toEqual({ prompt: "first ask", response: "first did" });
     expect(second).toEqual({ prompt: "second ask", response: "second did" });
   });
+
+  it("prunes old entries so a long-running session's cache file stays bounded", async () => {
+    // transcript-index.ts only ever reads the 3 most-recent turns
+    // (RECENT_SUMMARY_COUNT); writing a summary for every turn of a
+    // long-running session with no pruning would grow this file forever.
+    for (let turnIndex = 0; turnIndex < 200; turnIndex++) {
+      await cache.setTurn(sessionId, turnIndex, {
+        prompt: `prompt ${turnIndex}`,
+        response: `response ${turnIndex}`,
+      });
+    }
+
+    const raw = await readFile(path.join(cacheDir, "summaries", `${sessionId}.json`), "utf8");
+    const map = JSON.parse(raw) as Record<string, unknown>;
+    expect(Object.keys(map).length).toBeLessThan(200);
+  });
+
+  it("keeps the most-recent turns (by turnIndex) once pruning drops older ones", async () => {
+    for (let turnIndex = 0; turnIndex < 200; turnIndex++) {
+      await cache.setTurn(sessionId, turnIndex, {
+        prompt: `prompt ${turnIndex}`,
+        response: `response ${turnIndex}`,
+      });
+    }
+
+    const oldest = await cache.getTurn(sessionId, 0);
+    expect(oldest).toBeNull();
+
+    const mostRecent = await cache.getTurn(sessionId, 199);
+    expect(mostRecent).toEqual({ prompt: "prompt 199", response: "response 199" });
+  });
 });
 
 describe("getOrSummarizeTurn", () => {
