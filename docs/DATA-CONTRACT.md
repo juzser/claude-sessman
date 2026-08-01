@@ -367,6 +367,60 @@ turn would shift every later turn's `index`. A prompt that merely quotes or
 references the phrase later in its text (not as its own prefix) is not
 flagged.
 
+**`TranscriptTurn.summary: TurnSummary | null`** (`{ prompt: string;
+response: string }`, `server/src/summarizer.ts`) — a short LLM-generated
+ask/did pair for one turn. Which backend produces it is selected by
+`config.summarizer.kind` (`server/src/config.ts`, wired in
+`server/src/server.ts`'s `startServer`): `"ollama"` (default) uses
+`OllamaSummarizer` (`server/src/ollama-client.ts`), a thin HTTP client over
+`POST /api/generate` against the configured Ollama URL; `"null"` uses
+`NullSummarizer`, which always resolves `null`. `OllamaSummarizer` itself
+never throws either — any network failure, non-2xx response, timeout, or
+unparseable reply resolves `null` the same as `NullSummarizer` would. Four
+env vars configure this (`config.ts`'s `loadConfig`):
+
+| Env var | Default | Purpose |
+|---|---|---|
+| `SESSMAN_SUMMARIZER` | `ollama` | `"ollama"` or `"null"`; `"null"` forces zero Ollama calls |
+| `SESSMAN_OLLAMA_MODEL` | `qwen2.5:3b` | model name sent to Ollama's `/api/generate` |
+| `SESSMAN_OLLAMA_URL` | `http://127.0.0.1:11434` | Ollama base URL — **the only network destination this codebase ever calls, and it is loopback-only** |
+| `SESSMAN_CACHE_DIR` | `~/.cache/claude-sessman` | on-disk summary cache root — **deliberately never under `~/.claude`** |
+
+Behavioral rules that apply regardless of which `Summarizer` is selected:
+
+- **Only the 3 most recent turns of `recentTurns`/`turns` (both `/detail`
+  and `/flow`) ever have a non-null `summary`** (`RECENT_SUMMARY_COUNT` in
+  `transcript-index.ts`) — every older turn's `summary` is always `null`.
+  This window is recomputed on every read (`summaryWindowIndices()`), so a
+  turn's `summary` can revert from a populated value back to `null` purely
+  because newer turns pushed it out of the window; a consumer must not
+  assume a once-populated `summary` stays populated.
+- A turn is only ever eligible for summarization once its assistant has
+  actually replied (internal `gist !== null`); a turn still awaiting a
+  reply always has `summary: null`.
+- `summary` is populated asynchronously, on the same background refresh
+  cycle that backs the stale-while-revalidate cache described in
+  `docs/ARCHITECTURE.md` — never synchronously inside the request path. So
+  the very first `/detail`/`/flow` read after a new turn appears can
+  legitimately show `summary: null` even for a turn inside the 3-turn
+  window; a later poll fills it in once the summarizer call resolves.
+- On-disk cache (`server/src/summary-cache.ts`,
+  `createSummaryCache(cacheDir)`): one JSON file per session at
+  `<SESSMAN_CACHE_DIR>/summaries/<sessionId>.json`, keyed by `turnIndex` —
+  the effective cache key is the pair **`(sessionId, turnIndex)`**. A
+  failed/unparseable summarization result is never written to this file,
+  so it is retried on a later refresh rather than cached as a permanent
+  miss.
+- `server/src/ollama-lifecycle.ts`'s `startOllamaLifecycle` runs once at
+  server startup: it probes Ollama and only spawns `ollama serve` itself if
+  unreachable; its `stop()` only ever kills a child it spawned itself, and
+  is a no-op if it found an already-running Ollama (or if the `ollama`
+  binary was missing entirely).
+- With `SESSMAN_SUMMARIZER=null`, or `"ollama"` selected but Ollama
+  unreachable/binary missing, every `summary` is permanently `null` — this
+  field is always optional to a consumer, never a value to depend on being
+  present.
+
 Text captured for `prompt`/`gist` collapses whitespace and is capped at
 2000 chars internally (`MAX_CAPTURE_LENGTH`); display-time truncation is a
 second, separate limit — either limit being hit sets `truncated: true`.
