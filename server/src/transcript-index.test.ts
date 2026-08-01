@@ -1,7 +1,9 @@
 import { appendFile, mkdir, mkdtemp, readFile, rm, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { createSummaryCache } from "./summary-cache.js";
+import type { Summarizer } from "./summarizer.js";
 import { TranscriptIndexCache } from "./transcript-index.js";
 
 /** Builds one synthetic JSONL line, never real transcript content. */
@@ -1264,5 +1266,105 @@ describe("TranscriptIndexCache", () => {
         cacheCreationTokens: 999,
       });
     });
+  });
+});
+
+describe("TranscriptIndexCache turn summaries", () => {
+  let dir: string;
+  let transcriptPath: string;
+  let cacheDir: string;
+  const sessionId = "synthetic-summary-session";
+
+  beforeEach(async () => {
+    dir = await mkdtemp(path.join(tmpdir(), "sessman-transcript-summary-"));
+    transcriptPath = path.join(dir, `${sessionId}.jsonl`);
+    cacheDir = await mkdtemp(path.join(tmpdir(), "sessman-transcript-summary-cache-"));
+  });
+
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+    await rm(cacheDir, { recursive: true, force: true });
+  });
+
+  /** A turn: a user prompt line, optionally followed by an assistant reply line. */
+  function turnLines(index: number, atBase: number, withReply: boolean): string[] {
+    const promptAt = new Date(atBase).toISOString();
+    const lines = [userPromptLine(`turn ${index} prompt`, promptAt)];
+    if (withReply) {
+      const replyAt = new Date(atBase + 1).toISOString();
+      lines.push(assistantLine(`turn ${index} reply`, replyAt));
+    }
+    return lines;
+  }
+
+  it("attaches a summary to the 3 most recent turns only, leaving older turns unsummarized", async () => {
+    const summarizeTurn = vi.fn(async ({ prompt }: { prompt: string; response: string }) => ({
+      prompt: `SUM:${prompt}`,
+      response: "condensed",
+    }));
+    const summarizer: Pick<Summarizer, "summarizeTurn"> = { summarizeTurn };
+
+    const lines = [0, 1, 2, 3, 4].flatMap((i) => turnLines(i, i * 1000, true));
+    await writeFile(transcriptPath, lines.map((l) => `${l}\n`).join(""));
+
+    const cache = new TranscriptIndexCache(undefined, summarizer, createSummaryCache(cacheDir));
+    await cache.refreshAndWait(sessionId, transcriptPath);
+    const summary = cache.getSummary(sessionId, transcriptPath);
+
+    expect(summary?.recentTurns).toHaveLength(5);
+    expect(summary?.recentTurns[0].summary).toBeNull();
+    expect(summary?.recentTurns[1].summary).toBeNull();
+    expect(summary?.recentTurns[2].summary).toEqual({ prompt: "SUM:turn 2 prompt", response: "condensed" });
+    expect(summary?.recentTurns[3].summary).toEqual({ prompt: "SUM:turn 3 prompt", response: "condensed" });
+    expect(summary?.recentTurns[4].summary).toEqual({ prompt: "SUM:turn 4 prompt", response: "condensed" });
+    expect(summarizeTurn).toHaveBeenCalledTimes(3);
+  });
+
+  it("never calls the summarizer for a turn whose assistant hasn't replied yet", async () => {
+    const summarizeTurn = vi.fn(async () => ({ prompt: "should never happen", response: "should never happen" }));
+    const summarizer: Pick<Summarizer, "summarizeTurn"> = { summarizeTurn };
+
+    const lines = turnLines(0, 0, false); // prompt only, no assistant reply
+    await writeFile(transcriptPath, lines.map((l) => `${l}\n`).join(""));
+
+    const cache = new TranscriptIndexCache(undefined, summarizer, createSummaryCache(cacheDir));
+    await cache.refreshAndWait(sessionId, transcriptPath);
+    const summary = cache.getSummary(sessionId, transcriptPath);
+
+    expect(summary?.recentTurns).toHaveLength(1);
+    expect(summary?.recentTurns[0].summary).toBeNull();
+    expect(summarizeTurn).not.toHaveBeenCalled();
+  });
+
+  it("exposes the same 3-most-recent-only summary window on the flow view", async () => {
+    const summarizeTurn = vi.fn(async ({ prompt }: { prompt: string; response: string }) => ({
+      prompt: `SUM:${prompt}`,
+      response: "condensed",
+    }));
+    const summarizer: Pick<Summarizer, "summarizeTurn"> = { summarizeTurn };
+
+    const lines = [0, 1, 2, 3].flatMap((i) => turnLines(i, i * 1000, true));
+    await writeFile(transcriptPath, lines.map((l) => `${l}\n`).join(""));
+
+    const cache = new TranscriptIndexCache(undefined, summarizer, createSummaryCache(cacheDir));
+    await cache.refreshAndWait(sessionId, transcriptPath);
+    const flow = cache.getFlowSummary(sessionId, transcriptPath);
+
+    expect(flow?.turns).toHaveLength(4);
+    expect(flow?.turns[0].summary).toBeNull();
+    expect(flow?.turns[1].summary).toEqual({ prompt: "SUM:turn 1 prompt", response: "condensed" });
+    expect(flow?.turns[2].summary).toEqual({ prompt: "SUM:turn 2 prompt", response: "condensed" });
+    expect(flow?.turns[3].summary).toEqual({ prompt: "SUM:turn 3 prompt", response: "condensed" });
+  });
+
+  it("defaults to a null summary on every turn when no summarizer is configured", async () => {
+    const lines = turnLines(0, 0, true);
+    await writeFile(transcriptPath, lines.map((l) => `${l}\n`).join(""));
+
+    const cache = new TranscriptIndexCache();
+    await cache.refreshAndWait(sessionId, transcriptPath);
+    const summary = cache.getSummary(sessionId, transcriptPath);
+
+    expect(summary?.recentTurns[0].summary).toBeNull();
   });
 });

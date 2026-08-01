@@ -4,7 +4,11 @@ import { WebSocket, WebSocketServer } from "ws";
 import { createApp } from "./app.js";
 import type { AppConfig } from "./config.js";
 import { GitInfoCache } from "./git-info.js";
+import { OllamaSummarizer } from "./ollama-client.js";
+import { startOllamaLifecycle, type OllamaLifecycleHandle } from "./ollama-lifecycle.js";
 import { getSessions } from "./sessions-service.js";
+import { createSummaryCache } from "./summary-cache.js";
+import { NullSummarizer, type Summarizer } from "./summarizer.js";
 import { TranscriptIndexCache } from "./transcript-index.js";
 import { watchSessionsDir, type SessionWatcher } from "./watcher.js";
 
@@ -31,7 +35,29 @@ function broadcastPayload(wss: WebSocketServer, payload: string): void {
  */
 export function startServer(config: AppConfig): RunningServer {
   const gitCache = new GitInfoCache();
-  const transcriptIndexCache = new TranscriptIndexCache();
+
+  const summarizer: Pick<Summarizer, "summarizeTurn"> =
+    config.summarizer.kind === "ollama"
+      ? new OllamaSummarizer({ model: config.summarizer.model, url: config.summarizer.url })
+      : new NullSummarizer();
+  const summaryCache = createSummaryCache(config.summarizer.cacheDir);
+  const transcriptIndexCache = new TranscriptIndexCache(undefined, summarizer, summaryCache);
+
+  // Fire-and-forget: startServer stays synchronous (index.ts and tests call
+  // it without awaiting), and OllamaSummarizer already degrades every call to
+  // null if Ollama never becomes reachable, so nothing here needs to block
+  // startup on the probe/spawn resolving.
+  let ollamaLifecycle: OllamaLifecycleHandle | null = null;
+  if (config.summarizer.kind === "ollama") {
+    startOllamaLifecycle({ url: config.summarizer.url })
+      .then((handle) => {
+        ollamaLifecycle = handle;
+      })
+      .catch(() => {
+        // Best-effort; a failed probe/spawn just leaves ollamaLifecycle null.
+      });
+  }
+
   const app = createApp(config, gitCache, transcriptIndexCache, {
     selfOrigin: `http://${config.host}:${config.port}`,
   });
@@ -72,6 +98,7 @@ export function startServer(config: AppConfig): RunningServer {
     wss,
     async close(): Promise<void> {
       watcher.stop();
+      ollamaLifecycle?.stop();
       await new Promise<void>((resolve) => wss.close(() => resolve()));
       await new Promise<void>((resolve) => httpServer.close(() => resolve()));
     },
