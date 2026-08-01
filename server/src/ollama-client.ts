@@ -3,6 +3,8 @@ import type { SessionSummary, Summarizer, TurnSummary } from "./summarizer.js";
 export interface OllamaClientConfig {
   model: string;
   url: string;
+  /** Overrides GENERATE_TIMEOUT_MS; defaults to the real 20s production value. Only ever overridden in tests, to prove the timeout fires without waiting 20 real seconds. */
+  timeoutMs?: number;
 }
 
 const GENERATE_TIMEOUT_MS = 20_000;
@@ -120,7 +122,7 @@ export class OllamaSummarizer implements Summarizer {
           stream: false,
           options: { temperature: 0 },
         }),
-        signal: AbortSignal.timeout(GENERATE_TIMEOUT_MS),
+        signal: AbortSignal.timeout(this.config.timeoutMs ?? GENERATE_TIMEOUT_MS),
       });
       if (!res.ok) return null;
 

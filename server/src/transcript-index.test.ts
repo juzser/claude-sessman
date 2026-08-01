@@ -1320,6 +1320,27 @@ describe("TranscriptIndexCache turn summaries", () => {
     expect(summarizeTurn).toHaveBeenCalledTimes(3);
   });
 
+  it("summarizes all 3 turns when the transcript has exactly the window size", async () => {
+    const summarizeTurn = vi.fn(async ({ prompt }: { prompt: string; response: string }) => ({
+      prompt: `SUM:${prompt}`,
+      response: "condensed",
+    }));
+    const summarizer: Pick<Summarizer, "summarizeTurn"> = { summarizeTurn };
+
+    const lines = [0, 1, 2].flatMap((i) => turnLines(i, i * 1000, true));
+    await writeFile(transcriptPath, lines.map((l) => `${l}\n`).join(""));
+
+    const cache = new TranscriptIndexCache(undefined, summarizer, createSummaryCache(cacheDir));
+    await cache.refreshAndWait(sessionId, transcriptPath);
+    const summary = cache.getSummary(sessionId, transcriptPath);
+
+    expect(summary?.recentTurns).toHaveLength(3);
+    expect(summary?.recentTurns[0].summary).toEqual({ prompt: "SUM:turn 0 prompt", response: "condensed" });
+    expect(summary?.recentTurns[1].summary).toEqual({ prompt: "SUM:turn 1 prompt", response: "condensed" });
+    expect(summary?.recentTurns[2].summary).toEqual({ prompt: "SUM:turn 2 prompt", response: "condensed" });
+    expect(summarizeTurn).toHaveBeenCalledTimes(3);
+  });
+
   it("never calls the summarizer for a turn whose assistant hasn't replied yet", async () => {
     const summarizeTurn = vi.fn(async () => ({ prompt: "should never happen", response: "should never happen" }));
     const summarizer: Pick<Summarizer, "summarizeTurn"> = { summarizeTurn };

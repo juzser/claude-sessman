@@ -117,4 +117,19 @@ describe("OllamaSummarizer", () => {
 
     expect(result).toBeNull();
   });
+
+  it("resolves null once the request times out, rather than hanging forever", async () => {
+    const fixture = await startFixtureServer(() => {
+      // Accepts the connection but deliberately never calls res.end(),
+      // simulating a wedged/overloaded Ollama that never replies.
+    });
+    server = fixture.server;
+
+    // A short timeoutMs override so this test proves GENERATE_TIMEOUT_MS
+    // actually fires without waiting out the real 20s production value.
+    const summarizer = new OllamaSummarizer({ model: "fixture-model", url: fixture.url, timeoutMs: 20 });
+    const result = await summarizer.summarizeTurn({ prompt: "please fix the test", response: "done" });
+
+    expect(result).toBeNull();
+  });
 });
