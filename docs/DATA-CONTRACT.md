@@ -410,7 +410,10 @@ Behavioral rules that apply regardless of which `Summarizer` is selected:
   the effective cache key is the pair **`(sessionId, turnIndex)`**. A
   failed/unparseable summarization result is never written to this file,
   so it is retried on a later refresh rather than cached as a permanent
-  miss.
+  miss. Each write prunes the file down to the `MAX_CACHED_TURNS_PER_SESSION`
+  (20) entries with the highest `turnIndex`, so the file never grows
+  unbounded over a long-running session — well above the 3-turn read window
+  above so out-of-order summarization can't evict a turn a read still wants.
 - `server/src/ollama-lifecycle.ts`'s `startOllamaLifecycle` runs once at
   server startup: it probes Ollama and only spawns `ollama serve` itself if
   unreachable; its `stop()` only ever kills a child it spawned itself, and

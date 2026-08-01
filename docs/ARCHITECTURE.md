@@ -165,7 +165,12 @@ in-memory `MutableTurn.summary` it backs. A `null` result is never written,
 so a transient failure is retried on the next refresh tick rather than
 sticking forever; concurrent writes to the same session are serialized
 through a per-session write-lock queue so two overlapping `summarizeTurn`
-calls can't clobber each other's entries.
+calls can't clobber each other's entries. Each session's file is pruned on
+every write to the `MAX_CACHED_TURNS_PER_SESSION` (20) entries with the
+highest `turnIndex`, so a long-running session's cache can't grow
+unbounded — the margin above the 3-turn read window below is deliberate,
+tolerating turns being summarized out of strict order without evicting one
+a read still wants.
 
 **Only the 3 most recent turns of a session ever carry a summary, and it is
 never backfilled onto older turns.** This is enforced at *read* time, not
