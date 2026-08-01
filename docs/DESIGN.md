@@ -61,7 +61,7 @@ of this doc said the opposite.
 | Icon | 2026-07-31 | Hand-built (no shadcn-vue equivalent). `cva`-sized wrapper (`xs`/`sm`/`default`/`md`/`lg`) around any lucide icon component; every icon call site should route through it rather than importing lucide directly. |
 | Lozenge | 2026-07-31 | Hand-built (no shadcn-vue equivalent). Built directly against `--ds-*` status-tone utilities per "Status → lozenge mapping" below; `solid` variant uses the same `dark:bg-info-bold` contrast fix as Button. |
 | Skeleton | 2026-07-31 | Vendored, unmodified. |
-| Banner | 2026-07-31 | Vendored, tone-mapped to the fixed channel set (load-failure/submit-failure/success) documented in the component's own header comment. |
+| Banner | 2026-07-31 | Vendored, tone-mapped to the two banner channels the spec defines: load failure (with Retry, in place of the data) and submit failure (atop the form). Success is **not** a banner channel — it is a Toast — so the vendored `success` tone was removed rather than shipped inert; see "Known deviations". |
 | EmptyState | 2026-07-31 | Vendored, simplified: dropped the `illustration`/`illustrationSize` props (no illustration asset set exists in this repo yet; disclosed in-file). |
 | Sheet | 2026-07-31 | Vendored. Enter/exit animation classes (`animate-in`, `slide-in-from-*`, ...) omitted; they require the `tw-animate-css` package, which this repo deliberately does not add (disclosed below). Sheets open/close without a slide transition as a result. |
 | Switch | 2026-07-31 | Vendored, unmodified. Used by `ThemeToggle.vue`. |
@@ -256,6 +256,46 @@ re-deriving it.
   `--ds-info-bold` as the filled ground, not `--ds-primary` (same fix
   applied to Lozenge's `solid` variant). This deviation carries forward
   until the master's own Button recipe is fixed upstream.
+
+- **2026-07-31 — Banner's `success` tone removed, not vendored inert.** The
+  upstream Banner ships a working `success` tone (`bg-success-subtle
+  text-success` + a check icon) directly beneath a header comment reading
+  "Success: reported via toast, never a banner." The master spec agrees with
+  the comment, not the code: "Mutation success that stays on the page →
+  Toast." Vendoring it unchanged would have left live, working code inviting
+  exactly the anti-pattern its own comment warns against — and to the next
+  person reaching for it, a shipped tone reads as sanctioned. The `success`
+  case is dropped from `TONE_CLASSES`, `TONE_ICONS` and the `BannerTone`
+  union; `Banner` had no call sites, so nothing changed behaviourally. Adding
+  a Banner-success channel is a master-spec change, not a per-repo one.
+  **Exit condition:** none — this repo tracks the spec, and would revert only
+  if the master gains a success banner channel.
+
+- **2026-07-31 — Three vendored primitives are short of their spec contract.**
+  Each is inert today (no call site needs the missing piece), so none blocks
+  this PR, but all three are gaps against `profile/components.md` and are
+  recorded here rather than discovered later:
+  - `Card` omits `shadow-raised`; the spec's recipe is "hairline ring **plus**
+    `shadow-raised`". `Card` has no call sites yet, so the shadow is absent
+    from the compiled CSS entirely (correct JIT behaviour, not a build bug).
+    Must be fixed before the restructure PR starts consuming `Card`.
+  - `Button` has no `loading` variant or prop, though the spec says "`loading`
+    disables the control and spins the icon". `Button` *is* consumed here
+    (`FocusButton.vue`, `SessionFlowView.vue`); neither call site needs it.
+  - `SheetContent`'s icon-only close button has an `sr-only` label but no
+    Tooltip; the spec requires `aria-label` **and** a Tooltip for icon-only
+    buttons. The accessible name is satisfied, so this is a fidelity gap, not
+    an ARIA regression.
+  **Exit condition:** close all three when the restructure PR brings these
+  primitives into real use.
+
+- **2026-07-31 — `Icon`'s size scale has no 10px step (upstream gap).**
+  `ThemeToggle.vue` needs a `size-2.5` glyph, and `Icon`'s `cva` scale
+  (`xs`/`sm`/`default`/`md`/`lg` = 3/3.5/4/5/6) has no step that small, so it
+  and three other new call sites import the lucide component directly instead
+  of routing through the `Icon` primitive as the convention asks. Reported as
+  a missing step in the master's scale rather than patched around locally.
+  **Exit condition:** upstream adds the step, or the convention is relaxed.
 
 - **2026-07-31 — Real gate counts after this PR's migration.**
   `npm run design:gate` still fails, but the count dropped from this PR's

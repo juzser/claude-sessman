@@ -1,3 +1,4 @@
 export { default as Banner } from "./Banner.vue"
 
-export type BannerTone = "danger" | "warning" | "info" | "success"
+// No "success": success is a Toast channel, never a Banner. See Banner.vue.
+export type BannerTone = "danger" | "warning" | "info"

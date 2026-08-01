@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, type HTMLAttributes } from "vue"
-import { CircleAlert, CircleCheck, Info, TriangleAlert } from "@lucide/vue"
+import { CircleAlert, Info, TriangleAlert } from "@lucide/vue"
 import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
 import type { BannerTone } from "."
@@ -8,19 +8,20 @@ import type { BannerTone } from "."
 // Fixed channel mapping (per design spec, do not add new channels here):
 // - Load failure: banner replaces the data region, with a Retry action.
 // - Submit failure: banner sits atop the form being submitted.
-// - Success: reported via toast, never a banner.
+// - Success: reported via toast, never a banner. There is deliberately no
+//   `success` tone below. A working one would make the anti-pattern this
+//   comment warns about look sanctioned. Adding a Banner-success channel is a
+//   change to the design system's master spec, not a local addition here.
 const TONE_CLASSES: Record<BannerTone, string> = {
   danger: "bg-danger-subtle text-danger",
   warning: "bg-warning-subtle text-warning",
   info: "bg-info-subtle text-info",
-  success: "bg-success-subtle text-success",
 }
 
 const TONE_ICONS = {
   danger: CircleAlert,
   warning: TriangleAlert,
   info: Info,
-  success: CircleCheck,
 } as const
 
 const props = withDefaults(
