@@ -41,6 +41,12 @@ describe("startServer (integration)", () => {
       projectsDir,
       host: "127.0.0.1",
       port: 0,
+      summarizer: {
+        kind: "null",
+        model: "qwen2.5:3b",
+        url: "http://127.0.0.1:11434",
+        cacheDir: path.join(tmpdir(), "sessman-server-cache-fixture"),
+      },
     };
 
     running = startServer(config);
