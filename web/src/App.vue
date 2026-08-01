@@ -2,6 +2,7 @@
 import { computed, onMounted, onUnmounted, ref } from "vue";
 import SessionCard from "./components/SessionCard.vue";
 import SessionDetailDrawer from "./components/SessionDetailDrawer.vue";
+import ThemeToggle from "./components/ThemeToggle.vue";
 import { useSessions } from "./composables/useSessions";
 import { filterSessions, sortSessions, type SortMode } from "./lib/sort-filter";
 
@@ -62,7 +63,7 @@ const showDisconnectBanner = computed(
 </script>
 
 <template>
-  <div class="min-h-screen bg-slate-950 text-slate-100">
+  <div class="min-h-screen">
     <div
       v-if="showDisconnectBanner"
       class="sticky top-0 z-10 bg-amber-500/90 px-4 py-2 text-center text-sm font-medium text-slate-950"
@@ -91,6 +92,7 @@ const showDisconnectBanner = computed(
         >
           Sort: {{ sortLabel }}
         </button>
+        <ThemeToggle />
       </div>
     </header>
 

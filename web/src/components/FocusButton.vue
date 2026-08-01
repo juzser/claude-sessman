@@ -1,5 +1,8 @@
 <script setup lang="ts">
 import { onUnmounted, ref } from "vue";
+import { Check } from "@lucide/vue";
+import { Button } from "@/components/ui/button";
+import { Icon } from "@/components/ui/icon";
 import { focusSession } from "../lib/sessman-api";
 
 const props = withDefaults(
@@ -43,20 +46,23 @@ onUnmounted(() => {
 
 <template>
   <div class="inline-flex flex-col items-end gap-1">
-    <button
+    <Button
       type="button"
+      variant="outline"
+      :size="size === 'sm' ? 'xs' : 'default'"
       :disabled="state === 'pending'"
-      class="inline-flex items-center gap-1 rounded-lg border border-slate-700 text-slate-200 transition hover:border-slate-500 disabled:cursor-not-allowed disabled:opacity-60"
-      :class="size === 'sm' ? 'px-2 py-0.5 text-[11px]' : 'px-3 py-1.5 text-sm'"
       title="Focus this session's terminal tab (Terminal.app only)"
       aria-label="Focus this session's terminal tab (Terminal.app only)"
       @click="onClick"
     >
       <span v-if="state === 'pending'">Focusing…</span>
-      <span v-else-if="state === 'success'">Focused ✓</span>
+      <span v-else-if="state === 'success'" class="inline-flex items-center gap-1">
+        <Icon :icon="Check" size="sm" />
+        Focused
+      </span>
       <span v-else>Focus tab</span>
-    </button>
-    <p v-if="state === 'error'" role="alert" class="max-w-56 text-right text-[11px] text-red-400">
+    </Button>
+    <p v-if="state === 'error'" role="alert" class="max-w-56 text-right text-[11px] text-danger">
       {{ errorMessage }}
     </p>
   </div>

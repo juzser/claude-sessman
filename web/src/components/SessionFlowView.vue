@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
 import { VueFlow } from "@vue-flow/core";
+import { Button } from "@/components/ui/button";
+import { Lozenge } from "@/components/ui/lozenge";
 import { buildFlowGraph } from "../lib/flow-model";
 import { formatTurnTime, truncateLine } from "../lib/transcript-format";
 import type { FlowSummary, TranscriptTurn } from "../lib/types";
@@ -52,35 +54,28 @@ function retry(): void {
 
 <template>
   <div>
-    <p v-if="state === 'loading'" class="text-sm text-slate-400">Loading flow…</p>
+    <p v-if="state === 'loading'" class="text-sm text-fg-subtle">Loading flow…</p>
 
     <div v-else-if="state === 'error'" class="flex flex-col items-start gap-2">
-      <p class="text-sm text-red-300">{{ errorMessage }}</p>
-      <button
-        type="button"
-        class="rounded-lg border border-slate-700 px-3 py-1.5 text-sm text-slate-200 hover:border-slate-500"
-        @click="retry"
-      >
-        Retry
-      </button>
+      <p class="text-sm text-danger">{{ errorMessage }}</p>
+      <Button type="button" variant="outline" @click="retry">Retry</Button>
     </div>
 
-    <p v-else-if="isEmpty" class="text-sm text-slate-500">No turns recorded yet.</p>
+    <p v-else-if="isEmpty" class="text-sm text-fg-subtlest">No turns recorded yet.</p>
 
-    <p v-else-if="state === 'loaded' && !flow" class="text-sm text-slate-500">
+    <p v-else-if="state === 'loaded' && !flow" class="text-sm text-fg-subtlest">
       This session's transcript hasn't been indexed yet — check back in a moment.
     </p>
 
     <div
       v-else-if="state === 'loaded' && flow"
-      class="relative h-112 w-full overflow-hidden rounded-lg border border-slate-800 bg-slate-900/40"
+      class="relative h-112 w-full overflow-hidden rounded-lg border border-line bg-surface-sunken/40"
     >
-      <p
-        v-if="flow.turnsDropped"
-        class="absolute left-2 top-2 z-10 rounded-full border border-amber-700 bg-slate-950/80 px-2 py-0.5 text-[11px] text-amber-300"
-      >
-        Showing the most recent {{ flow.retainedTurnCount }} of {{ flow.turnCount }} turns
-      </p>
+      <div v-if="flow.turnsDropped" class="absolute left-2 top-2 z-10">
+        <Lozenge tone="warning" variant="subtle">
+          Showing the most recent {{ flow.retainedTurnCount }} of {{ flow.turnCount }} turns
+        </Lozenge>
+      </div>
       <VueFlow
         :nodes="graph.nodes"
         :edges="graph.edges"
@@ -92,41 +87,41 @@ function retry(): void {
       >
         <template #node-default="{ data }">
           <div
-            class="w-72 cursor-pointer rounded-lg border border-slate-700 bg-slate-900 p-2.5 text-xs shadow-lg"
+            class="w-72 cursor-pointer rounded-lg border border-line bg-surface-raised p-2.5 text-xs shadow-lg"
             :class="{ 'z-20': isExpanded(data.turn) }"
             @click="toggleExpanded(data.turn.index)"
           >
-            <div class="mb-1 flex items-center justify-between text-slate-500">
+            <div class="mb-1 flex items-center justify-between text-fg-subtlest">
               <span>turn #{{ data.turn.index + 1 }}</span>
               <span>{{ formatTurnTime(data.turn.at) }}</span>
             </div>
-            <p class="text-slate-200" :title="data.turn.prompt.text">
-              <span class="text-slate-500">prompt:</span>
+            <p class="text-fg" :title="data.turn.prompt.text">
+              <span class="text-fg-subtlest">prompt:</span>
               {{ truncateLine(data.turn.prompt.text || "(no text)", PROMPT_LINE_LENGTH) }}
             </p>
-            <p v-if="data.turn.gist.text" class="mt-1 text-slate-300" :title="data.turn.gist.text">
-              <span class="text-slate-500">reply:</span> {{ truncateLine(data.turn.gist.text, PROMPT_LINE_LENGTH) }}
+            <p v-if="data.turn.gist.text" class="mt-1 text-fg-subtle" :title="data.turn.gist.text">
+              <span class="text-fg-subtlest">reply:</span> {{ truncateLine(data.turn.gist.text, PROMPT_LINE_LENGTH) }}
             </p>
-            <p class="mt-1.5 text-slate-400">{{ toolChipLabel(data.turn) }}</p>
+            <p class="mt-1.5 text-fg-subtle">{{ toolChipLabel(data.turn) }}</p>
 
-            <div v-if="isExpanded(data.turn)" class="mt-2 max-h-40 overflow-y-auto border-t border-slate-800 pt-2">
+            <div v-if="isExpanded(data.turn)" class="mt-2 max-h-40 overflow-y-auto border-t border-line pt-2">
               <ul v-if="data.turn.toolCalls.length > 0" class="flex flex-col gap-1">
                 <li
                   v-for="(call, i) in data.turn.toolCalls"
                   :key="i"
-                  class="rounded-sm border border-slate-700 px-1.5 py-0.5 text-[11px] text-slate-300"
+                  class="rounded-sm border border-line px-1.5 py-0.5 text-[11px] text-fg-subtle"
                 >
                   {{ call.name }}<span v-if="call.target"> — {{ call.target }}</span>
                 </li>
               </ul>
-              <p v-if="data.turn.toolCallsOmitted > 0" class="mt-1 text-[11px] text-slate-500">
+              <p v-if="data.turn.toolCallsOmitted > 0" class="mt-1 text-[11px] text-fg-subtlest">
                 +{{ data.turn.toolCallsOmitted }} more
               </p>
               <div v-if="data.turn.filesTouched.length > 0" class="mt-1.5 flex flex-wrap gap-1">
                 <span
                   v-for="file in data.turn.filesTouched"
                   :key="file"
-                  class="rounded-full border border-slate-700 px-1.5 py-0.5 text-[11px] text-slate-400"
+                  class="rounded-full border border-line px-1.5 py-0.5 text-[11px] text-fg-subtle"
                 >
                   {{ file }}
                 </span>

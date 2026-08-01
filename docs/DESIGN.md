@@ -1,17 +1,27 @@
 # Design — claude-sessman
 
-Implements the **Hans Design System** (master: hans repo,
-`knowledge/design-system/`). Global token/layout/UX rules apply; this file
-adds the repo-local specifics. On conflict, the master wins — flag the
-conflict, don't fork the rule. This repo must also have a row in the
-master's `adopters.md`; the two land together.
+Implements the **Hans Design System** (master lives in a private internal
+repo). Global token/layout/UX rules apply; this file adds the repo-local
+specifics. On conflict, the master wins — flag the conflict, don't fork the
+rule. This repo must also have a row in the master's adopters registry; the
+two land together.
 
-This PR is **infrastructure only**: it upgrades the toolchain and lands the
-tokens and gates, but does not restyle any existing screen. `App.vue` and
-its child components still use raw Tailwind palette classes
-(`bg-slate-950`, `text-slate-100`, ...) exactly as before. A follow-up PR
-migrates them to `--ds-*` token utilities; see "Known deviations" below for
-what that PR inherits.
+This PR is **primitives and first-migration**. The Tailwind v4 upgrade, the
+`hds-tokens.css` copy, the `scripts/design/` gate scripts and the
+`design:gate` npm script all landed earlier and are already on `master`;
+this PR does not touch them. What it adds is the component layer on top:
+the six runtime dependencies those components need, the full primitive set
+(see "Primitive inventory" below), the `cn` helper and the `@/*` path
+alias, and a migration of the app shell (`web/index.html`, `App.vue`'s root
+shell, `ThemeToggle.vue`) plus two components (`FocusButton.vue`,
+`SessionFlowView.vue`) to `--ds-*` token utilities and the new primitives. It deliberately does **not** restyle `SessionCard.vue`,
+`SessionDetailDrawer.vue`, or `TranscriptTurnList.vue` — those still use raw
+Tailwind palette classes (`bg-slate-950`, `text-slate-100`, ...) exactly as
+before, because all three are owned by the follow-up Main+Rail restructure
+task, which reshapes the same markup it would restyle. `App.vue`'s
+header/input/banner/error-state chrome is deferred to that task for the same
+reason. See "Known deviations" below for the exact gate counts this leaves
+and what the follow-up PR inherits.
 
 ## Declarations
 
@@ -33,16 +43,33 @@ what that PR inherits.
 
 ## Primitive inventory (closed set)
 
-Empty. This repo has no shadcn-vue and has not vendored any primitive from
-`profile/components.md` yet — every element in `web/src/components/` today
-is a hand-rolled `<div>`/`<button>` styled with raw Tailwind utility classes,
-predating this adoption. The follow-up visual-adoption PR is expected to
-vendor the first primitives (at minimum Card, Button, Badge/Lozenge for
-connection state) and add rows here in the same PR that introduces them.
+All 14 primitives called for by `profile/components.md` are vendored as of
+this PR, at `web/src/components/ui/<name>/`. Eleven are copied in from
+shadcn-vue following the reference adopter's vendoring pattern (own copy,
+never a package dependency); three have no shadcn-vue equivalent and are
+hand-built directly against `--ds-*` utilities instead. Vendored primitives
+consume the shadcn-bridge class names (`bg-background`, `text-foreground`,
+`bg-card`, `text-muted-foreground`, ...) exactly as shadcn-vue ships them —
+`hds-tokens.css`'s bridge block exists precisely so vendored components can
+do this unmodified; see "Known deviations" below for why an earlier draft
+of this doc said the opposite.
 
 | Primitive | Since | Notes |
 |---|---|---|
-| *(none vendored yet)* | | |
+| Card | 2026-07-31 | Vendored. `CardTitle`/`CardDescription` use `font-heading` in place of upstream's non-existent `cn-font-heading` class (typo fix, disclosed below). |
+| Button | 2026-07-31 | Vendored. Dark-mode `default` variant uses `dark:bg-info-bold` instead of `bg-primary` (contrast fix, disclosed below). |
+| Icon | 2026-07-31 | Hand-built (no shadcn-vue equivalent). `cva`-sized wrapper (`xs`/`sm`/`default`/`md`/`lg`) around any lucide icon component; every icon call site should route through it rather than importing lucide directly. |
+| Lozenge | 2026-07-31 | Hand-built (no shadcn-vue equivalent). Built directly against `--ds-*` status-tone utilities per "Status → lozenge mapping" below; `solid` variant uses the same `dark:bg-info-bold` contrast fix as Button. |
+| Skeleton | 2026-07-31 | Vendored, unmodified. |
+| Banner | 2026-07-31 | Vendored, tone-mapped to the two banner channels the spec defines: load failure (with Retry, in place of the data) and submit failure (atop the form). Success is **not** a banner channel — it is a Toast — so the vendored `success` tone was removed rather than shipped inert; see "Known deviations". |
+| EmptyState | 2026-07-31 | Vendored, simplified: dropped the `illustration`/`illustrationSize` props (no illustration asset set exists in this repo yet; disclosed in-file). |
+| Sheet | 2026-07-31 | Vendored. Enter/exit animation classes (`animate-in`, `slide-in-from-*`, ...) omitted; they require the `tw-animate-css` package, which this repo deliberately does not add (disclosed below). Sheets open/close without a slide transition as a result. |
+| Switch | 2026-07-31 | Vendored, unmodified. Used by `ThemeToggle.vue`. |
+| Toolbar | 2026-07-31 | Hand-built (no shadcn-vue equivalent). Built directly against `--ds-*` utilities. |
+| Input | 2026-07-31 | Vendored, unmodified. |
+| Tooltip | 2026-07-31 | Vendored. Same `tw-animate-css` omission as Sheet (no fade-in/zoom-in on open). Used by `ThemeToggle.vue`'s icon-only trigger. |
+| RowList / Row | 2026-07-31 | Vendored at `ui/row-list/`, unmodified. Not yet consumed by any page. |
+| Separator | 2026-07-31 | Vendored, unmodified. |
 
 ## Charts and illustrations
 
@@ -73,8 +100,8 @@ ratio or "WCAG pass" that wasn't produced by this script.
 
 **Adherence lint is not wired.** The master's guidance is "point it at the
 master's config in place; do not copy it in" — that assumes the adopter repo
-is co-located with `knowledge/design-system/` (true for the reference
-adopter, which lives in the same monorepo as the design system).
+is co-located with the design system's own repo (true for the reference
+adopter, which lives in the same private monorepo as the design system).
 `claude-sessman` is a separate public GitHub repo with no filesystem or
 network access to that config at lint time, so there is no "in place" to
 point at. This is left as an open gap rather than silently worked around by
@@ -96,12 +123,16 @@ the real output and why it's deferred rather than fixed here.
 
 ## Status → lozenge mapping (app-wide, fixed)
 
-No Lozenge/Badge primitive is vendored yet (see "Primitive inventory"
-above), so nothing in the running UI uses this mapping today —
-`SessionCard.vue` shows connection state as a plain colored dot
-(`bg-emerald-400`/`bg-amber-400`/`bg-slate-500`), not a lozenge. This table
-records the intended mapping for when that primitive is vendored, so the
-visual-adoption PR doesn't have to invent one.
+Lozenge is now vendored (see "Primitive inventory" above), but nothing in
+the running UI uses this specific mapping yet: `SessionCard.vue` still
+shows connection state as a plain colored dot
+(`bg-emerald-400`/`bg-amber-400`/`bg-slate-500`), not a lozenge, because
+`SessionCard.vue` is out of this PR's scope by mandate. `SessionFlowView.vue`
+does use the vendored Lozenge in this PR, but for a different, unrelated
+notice (how many turns were trimmed from the flow graph), not for
+connection status. This table records the intended mapping for when
+`SessionCard.vue` is migrated, so that follow-up PR doesn't have to invent
+one.
 
 The domain statuses are exactly the members of `ConnectionState` in
 `web/src/lib/ws-client.ts` (`"connecting" | "open" | "reconnecting" |
@@ -144,9 +175,11 @@ reference page.
 ## Repo-specific patterns
 
 None yet beyond what's already documented in the repo's own `CLAUDE.md`
-(`composables/useSessions.ts` for the fetch+WS-subscribe pattern). Nothing
-UX-relevant has been standardized beyond the master because no page has been
-restyled under this design system yet.
+(`composables/useSessions.ts` for the fetch+WS-subscribe pattern). This PR
+adds one: theme persistence in `ThemeToggle.vue` resolves in the order
+`localStorage` → `prefers-color-scheme` → dark fallback; any future control
+that needs to read or change theme should reuse that order rather than
+re-deriving it.
 
 ## Known deviations
 
@@ -167,30 +200,36 @@ restyled under this design system yet.
   shim would change every unstyled border in the app. It hardcodes a gray
   default that bypasses the design system's own border token
   (`--ds-border`/`border-line`), which is exactly the class of thing the
-  hardcode lint exists to flag (and, correctly, does not flag here — the
-  lint only scans `web/src`, not `style.css`). **Exit condition:** remove
+  hardcode lint exists to flag. It does not flag it, and the reason is worth
+  recording: `web/src/style.css` *is* scanned (`.css` is in the linter's
+  extension set), but the shim line contains `var(--`, which the linter
+  treats as proof that a line is a token reference. A hardcoded fallback
+  smuggled in as the second argument of `var()` is invisible to this gate.
+  **Exit condition:** remove
   this block in the same PR that restyles `App.vue` and its components,
   once every element that relied on the implicit default gets an explicit
   `border-line` (or other token) utility instead.
 
-- **2026-07-31 — Shadcn bridge present but unconsumed.** The bridge block
-  ships in this repo's tokens file (it is part of the byte-identical master
-  copy); nothing here reads it. Do not rebuild it. The
-  reference adopter (hans-dashboard) absorbed most of the HDS 3.0.0 upgrade
-  cost through a shadcn-vue "bridge" block in its tokens file, which maps
-  shadcn's own CSS variable names (`--background`, `--primary`, ...) onto
-  `--ds-*` values, plus a second `@theme inline` block turning those into
-  Tailwind utilities. That block is present in the copied `hds-tokens.css`
-  here too (it's part of the byte-identical master file), but nothing in
-  this repo consumes it — `claude-sessman` has no shadcn-vue and its future
-  primitives (per "Primitive inventory" above) will be built directly
-  against `--ds-*` utilities, not through the bridge. This changes what a
-  future major token bump costs here: the reference adopter can often
-  absorb a bridge-side rename without touching component code, while this
-  repo's components will reference `--ds-*` names directly and take the
-  full diff of any renamed token. Accepted for now since there's no
-  shadcn-vue to bridge from; revisit if this repo ever vendors shadcn-vue
-  primitives instead of hand-rolling on top of `--ds-*`.
+- **2026-07-31 — Correction: the shadcn bridge is consumed, on purpose.**
+  An earlier draft of this entry (written before any primitive was vendored)
+  said the bridge block in `hds-tokens.css` was "present but unconsumed" and
+  that this repo's primitives would be built directly against `--ds-*`
+  utilities instead of the bridge. That turned out to be wrong once
+  vendoring actually started. `hds-tokens.css`'s own comment on the bridge's
+  second `@theme inline` block says utilities like `bg-background`,
+  `border-border`, and `text-muted-foreground` exist specifically so that
+  "vendored shadcn-vue primitives consume these names" — that is exactly
+  what the 11 vendored primitives in this PR do (`Card`, `Sheet`, `Switch`,
+  `Tooltip`, and the rest use shadcn-vue's stock class names verbatim, e.g.
+  `TooltipContent.vue`'s `bg-foreground text-background`). This is correct,
+  not a violation: rebuilding those recipes against `--ds-*` names directly
+  would just be reproducing what the bridge already resolves to, with more
+  code to maintain. The distinction that does hold: the 3 hand-built
+  primitives with no shadcn-vue recipe to inherit (`Icon`, `Lozenge`,
+  `Toolbar`) are built directly against `--ds-*` utilities, because there is
+  no vendored shadcn-vue class name for them to consume. Kept as a "known
+  deviations" entry rather than deleted so the wrong initial assumption and
+  its correction are both on record.
 
 - **2026-07-31 — Button recipe vs. dark-mode `--ds-primary` contrast.**
   `profile/components.md`'s Button recipe specifies `bg-primary
@@ -213,35 +252,111 @@ restyled under this design system yet.
   This confirms the token file's own claim: taken literally, the Button
   recipe ships an AA failure for normal-weight white body text in dark mode.
   Following the reference adopter's resolution of the same upstream
-  contradiction: when a future Button primitive is vendored here, its dark
-  variant uses `--ds-info-bold` as the filled ground, not `--ds-primary`, and
-  this deviation carries forward until the master's own Button recipe is
-  fixed upstream.
+  contradiction, the vendored Button's dark `default` variant uses
+  `--ds-info-bold` as the filled ground, not `--ds-primary` (same fix
+  applied to Lozenge's `solid` variant). This deviation carries forward
+  until the master's own Button recipe is fixed upstream.
 
-- **2026-07-31 — Design gates wired but not yet passing.** `npm run
-  design:gate` runs today and fails against the pre-existing UI, which
-  predates this adoption and has not been migrated to `--ds-*` tokens:
-  - Hardcode lint: 130 violations, all raw Tailwind palette classes
-    (`bg-slate-950`, `text-slate-100`, `border-amber-500`, ...) across
-    `SessionCard.vue`, `TranscriptTurnList.vue`, `FocusButton.vue`, plus a
-    few false-positive duration-string matches in
-    `web/src/lib/time-ago.test.ts` (test fixtures like `"5s"`, not styling
-    values).
-  - No-emoji lint: 17 findings — mostly em-dashes in existing template copy
-    (`App.vue`, `SessionCard.vue`, `SessionDetailDrawer.vue`,
-    `SessionFlowView.vue`), one literal check-mark glyph in
-    `FocusButton.vue`, and four decorative pictographs (a star, a
-    four-pointed sparkle, a plus, and a hamburger-menu glyph) in
-    `web/src/lib/identicon.ts`'s avatar glyph set. (Deliberately described
-    rather than reproduced here — quoting the literal characters would trip
-    this same gate against this file.)
-  None of this is a regression from this PR — it is the true, pre-existing
-  state of the UI, and this PR does not touch any of these files' visual
-  behavior by mandate. **Exit condition:** resolved incrementally by the
-  visual-adoption PR(s) that migrate each component to `--ds-*` utilities,
-  replace em-dashes in UI copy, and either replace or explicitly
-  `ds-allow-hardcode`-annotate the `identicon.ts` glyph set (a case worth
-  deciding deliberately — those are avatar-generator glyphs, not literal
-  emoji in product chrome).
+- **2026-07-31 — Banner's `success` tone removed, not vendored inert.** The
+  upstream Banner ships a working `success` tone (`bg-success-subtle
+  text-success` + a check icon) directly beneath a header comment reading
+  "Success: reported via toast, never a banner." The master spec agrees with
+  the comment, not the code: "Mutation success that stays on the page →
+  Toast." Vendoring it unchanged would have left live, working code inviting
+  exactly the anti-pattern its own comment warns against — and to the next
+  person reaching for it, a shipped tone reads as sanctioned. The `success`
+  case is dropped from `TONE_CLASSES`, `TONE_ICONS` and the `BannerTone`
+  union; `Banner` had no call sites, so nothing changed behaviourally. Adding
+  a Banner-success channel is a master-spec change, not a per-repo one.
+  **Exit condition:** none — this repo tracks the spec, and would revert only
+  if the master gains a success banner channel.
+
+- **2026-07-31 — Three vendored primitives are short of their spec contract.**
+  Each is inert today (no call site needs the missing piece), so none blocks
+  this PR, but all three are gaps against `profile/components.md` and are
+  recorded here rather than discovered later:
+  - `Card` omits `shadow-raised`; the spec's recipe is "hairline ring **plus**
+    `shadow-raised`". `Card` has no call sites yet, so the shadow is absent
+    from the compiled CSS entirely (correct JIT behaviour, not a build bug).
+    Must be fixed before the restructure PR starts consuming `Card`.
+  - `Button` has no `loading` variant or prop, though the spec says "`loading`
+    disables the control and spins the icon". `Button` *is* consumed here
+    (`FocusButton.vue`, `SessionFlowView.vue`); neither call site needs it.
+  - `SheetContent`'s icon-only close button has an `sr-only` label but no
+    Tooltip; the spec requires `aria-label` **and** a Tooltip for icon-only
+    buttons. The accessible name is satisfied, so this is a fidelity gap, not
+    an ARIA regression.
+  **Exit condition:** close all three when the restructure PR brings these
+  primitives into real use.
+
+- **2026-07-31 — `Icon`'s size scale has no 10px step (upstream gap).**
+  `ThemeToggle.vue` needs a `size-2.5` glyph, and `Icon`'s `cva` scale
+  (`xs`/`sm`/`default`/`md`/`lg` = 3/3.5/4/5/6) has no step that small, so it
+  and three other new call sites import the lucide component directly instead
+  of routing through the `Icon` primitive as the convention asks. Reported as
+  a missing step in the master's scale rather than patched around locally.
+  **Exit condition:** upstream adds the step, or the convention is relaxed.
+
+- **2026-07-31 — Real gate counts after this PR's migration.**
+  `npm run design:gate` still fails, but the count dropped from this PR's
+  starting baseline (130 hardcode / 17 no-emoji, both measured before any
+  primitive was vendored) as the in-scope files were migrated. Current,
+  honest counts, each attributed:
+  - **Hardcode lint: 97 violations** (`python3 scripts/design/lint_hardcodes.py
+    web/src`), by file:
+    - `SessionDetailDrawer.vue` (37), `TranscriptTurnList.vue` (11),
+      `SessionCard.vue` (16) and `App.vue` (16, its remaining
+      header/input/banner/error-state chrome) — deliberately not migrated.
+      All four are owned by the follow-up Main+Rail restructure task, which
+      rewrites this markup rather than merely recolouring it; the drawer and
+      the turn list may not survive that restructure at all. Migrating them
+      here would be work thrown away, so the restructure PR carries them.
+    - `hds-tokens.css` (8) — hex/px values inside the byte-identical vendor
+      copy of the master's own tokens file. Not this repo's to fix; the
+      lint scans `web/src` broadly and the tokens file happens to live
+      under it, but its contents are never edited locally (see
+      "Declarations" above).
+    - `web/src/lib/time-ago.test.ts` (4) — false-positive matches on
+      duration-string test fixtures (`"5s"`, `"59s"`, `"45s"`), not styling
+      values. **This is already fixed upstream** (the master's
+      `lint_hardcodes.py` now skips test files), but that fix has not been
+      re-copied into this repo yet; re-copying the script is a separate,
+      later change. Once it lands, this repo's count drops from 97 to 93
+      with no code change here.
+    - `SessionFlowView.vue` (3) and `FocusButton.vue` (1) — `text-[11px]`
+      hardcodes in files this PR *did* migrate. Left as-is: the nearest
+      token, `text-caption`/`text-xs`, is 12px, one pixel larger, and
+      swapping it would be a real (if tiny) visual change outside this
+      PR's visually-neutral mandate for these two labels.
+    - `TooltipContent.vue` (1) — `rounded-[2px]` on the tooltip arrow,
+      copied verbatim from shadcn-vue's own stock recipe. Same reasoning as
+      the two above: not worth a bespoke token for one arrow corner.
+  - **No-emoji lint: 16 findings** (`python3 scripts/design/check_no_emoji.py
+    web/src CLAUDE.md docs/DESIGN.md`; not part of `npm run design:gate`
+    directly, since that script's `&&` chain never reaches it while the
+    hardcode lint fails), by file:
+    - `App.vue` (1), `SessionCard.vue` (4), `SessionDetailDrawer.vue` (5),
+      `SessionFlowView.vue` (2) — em-dashes in pre-existing template copy,
+      untouched by this PR for the same reasons as the hardcode-lint
+      attribution above.
+    - `web/src/lib/identicon.ts` (4) — decorative pictographs (a star, a
+      four-pointed sparkle, a plus, and a hamburger-menu glyph) in the
+      avatar glyph set. (Deliberately described rather than reproduced here;
+      quoting the literal characters would trip this same gate against this
+      file.) Out of scope for this PR.
+    - This is one *better* than the 17-finding baseline: `FocusButton.vue`'s
+      literal check-mark glyph (previously appended to its "Focused" label)
+      is gone, replaced by the vendored `Icon` primitive rendering lucide's
+      `Check` next to the plain text label, and the five em-dashes this PR's
+      own new primitive comments introduced along the way (`ThemeToggle.vue`,
+      `Banner.vue`, `SheetOverlay.vue`, `SheetContent.vue`, `SheetTitle.vue`)
+      were rewritten before this count was taken.
+  None of the remaining findings are a regression from this PR — each is
+  either a pre-existing file this PR deliberately does not touch (with a
+  reason above), the byte-identical tokens copy, a pending-but-not-yet-
+  applied upstream fix, or a disclosed one-pixel non-token gap. **Exit
+  condition:** the Main+Rail restructure resolves the four deferred files at
+  once (by migrating them, rewriting them, or dropping them), and the
+  hardcode-lint script's test-file-skip fix is re-copied from master.
   Adherence lint is a separate, permanent gap for this repo — see the "Gates
   wired" section above, not repeated here.
