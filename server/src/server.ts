@@ -18,6 +18,11 @@ export interface RunningServer {
   close(): Promise<void>;
 }
 
+/** Injectable seam for tests: overrides how the Ollama lifecycle is started, without ever spawning a real process or touching the network. Defaults to the real `startOllamaLifecycle`. */
+export interface StartServerDeps {
+  startOllamaLifecycle?: (config: { url: string }) => Promise<OllamaLifecycleHandle>;
+}
+
 function broadcastPayload(wss: WebSocketServer, payload: string): void {
   for (const client of wss.clients) {
     if (client.readyState === WebSocket.OPEN) {
@@ -33,7 +38,8 @@ function broadcastPayload(wss: WebSocketServer, payload: string): void {
  * registry and re-enriches from scratch, which re-derives `alive` fresh
  * each time — no separate timer needed.
  */
-export function startServer(config: AppConfig): RunningServer {
+export function startServer(config: AppConfig, deps: StartServerDeps = {}): RunningServer {
+  const startLifecycle = deps.startOllamaLifecycle ?? startOllamaLifecycle;
   const gitCache = new GitInfoCache();
 
   const summarizer: Pick<Summarizer, "summarizeTurn"> =
@@ -43,20 +49,19 @@ export function startServer(config: AppConfig): RunningServer {
   const summaryCache = createSummaryCache(config.summarizer.cacheDir);
   const transcriptIndexCache = new TranscriptIndexCache(undefined, summarizer, summaryCache);
 
-  // Fire-and-forget: startServer stays synchronous (index.ts and tests call
-  // it without awaiting), and OllamaSummarizer already degrades every call to
-  // null if Ollama never becomes reachable, so nothing here needs to block
-  // startup on the probe/spawn resolving.
-  let ollamaLifecycle: OllamaLifecycleHandle | null = null;
-  if (config.summarizer.kind === "ollama") {
-    startOllamaLifecycle({ url: config.summarizer.url })
-      .then((handle) => {
-        ollamaLifecycle = handle;
-      })
-      .catch(() => {
-        // Best-effort; a failed probe/spawn just leaves ollamaLifecycle null.
-      });
-  }
+  // startServer stays synchronous (index.ts and tests call it without
+  // awaiting), and OllamaSummarizer already degrades every call to null if
+  // Ollama never becomes reachable, so nothing here needs to block startup on
+  // the probe/spawn resolving. The PROMISE itself (not just its side effect)
+  // is retained and awaited inside close() below — reading a variable
+  // assigned from within a `.then()` would race close(): if shutdown happens
+  // before the spawn/probe settles, the variable would still be null,
+  // `?.stop()` would silently no-op, and a self-spawned `ollama serve` would
+  // be orphaned forever.
+  const lifecyclePromise: Promise<OllamaLifecycleHandle | null> =
+    config.summarizer.kind === "ollama"
+      ? startLifecycle({ url: config.summarizer.url }).catch(() => null)
+      : Promise.resolve(null);
 
   const app = createApp(config, gitCache, transcriptIndexCache, {
     selfOrigin: `http://${config.host}:${config.port}`,
@@ -98,7 +103,13 @@ export function startServer(config: AppConfig): RunningServer {
     wss,
     async close(): Promise<void> {
       watcher.stop();
-      ollamaLifecycle?.stop();
+      // Awaited (not read off a variable a `.then()` may not have assigned
+      // yet), so a self-spawned `ollama serve` is always stopped even if
+      // shutdown races the spawn/probe settling. Safe to call twice: the
+      // promise is already settled on a second close(), and stop() (a plain
+      // child.kill()) is a no-op on an already-killed child.
+      const handle = await lifecyclePromise;
+      handle?.stop();
       await new Promise<void>((resolve) => wss.close(() => resolve()));
       await new Promise<void>((resolve) => httpServer.close(() => resolve()));
     },

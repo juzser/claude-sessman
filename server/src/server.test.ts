@@ -2,9 +2,10 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { WebSocket } from "ws";
 import type { AppConfig } from "./config.js";
+import type { OllamaLifecycleHandle } from "./ollama-lifecycle.js";
 import { startServer, type RunningServer } from "./server.js";
 
 interface SessionsMessage {
@@ -126,5 +127,54 @@ describe("startServer (integration)", () => {
     ]);
     expect(message.data.map((s) => s.sessionId)).toEqual(["watcher-triggered-session"]);
     ws.close();
+  });
+});
+
+describe("startServer ollama lifecycle shutdown", () => {
+  let sessionsDir: string;
+  let projectsDir: string;
+
+  beforeEach(async () => {
+    sessionsDir = await mkdtemp(path.join(tmpdir(), "sessman-server-sessions-"));
+    projectsDir = await mkdtemp(path.join(tmpdir(), "sessman-server-projects-"));
+  });
+
+  afterEach(async () => {
+    await rm(sessionsDir, { recursive: true, force: true });
+    await rm(projectsDir, { recursive: true, force: true });
+  });
+
+  it("still stops a self-spawned ollama lifecycle even when it resolves only after close() was already called", async () => {
+    const config: AppConfig = {
+      sessionsDir,
+      projectsDir,
+      host: "127.0.0.1",
+      port: 0,
+      summarizer: {
+        kind: "ollama",
+        model: "fixture-model",
+        url: "http://127.0.0.1:1", // never actually dialed — the lifecycle starter below is faked
+        cacheDir: path.join(tmpdir(), "sessman-server-cache-fixture"),
+      },
+    };
+
+    const stop = vi.fn();
+    let resolveLifecycle!: (handle: OllamaLifecycleHandle) => void;
+    const lifecyclePromise = new Promise<OllamaLifecycleHandle>((resolve) => {
+      resolveLifecycle = resolve;
+    });
+    const fakeStartOllamaLifecycle = vi.fn(() => lifecyclePromise);
+
+    const running = startServer(config, { startOllamaLifecycle: fakeStartOllamaLifecycle });
+    await new Promise<void>((resolve) => running.httpServer.once("listening", resolve));
+
+    // Shutdown races the spawn/probe promise: close() runs first, and only
+    // afterwards does the lifecycle resolve — the exact ordering that orphans
+    // a self-spawned `ollama serve` without the fix.
+    const closePromise = running.close();
+    resolveLifecycle({ spawnedByUs: true, fellBackToNull: false, stop });
+    await closePromise;
+
+    expect(stop).toHaveBeenCalledTimes(1);
   });
 });
