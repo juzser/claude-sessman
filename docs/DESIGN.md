@@ -6,12 +6,15 @@ specifics. On conflict, the master wins — flag the conflict, don't fork the
 rule. This repo must also have a row in the master's adopters registry; the
 two land together.
 
-This PR is **infrastructure and first-migration**: it upgrades the
-toolchain, lands the tokens and gates, vendors the full primitive set (see
-"Primitive inventory" below), and migrates the app shell (`web/index.html`,
-`App.vue`'s root shell, `ThemeToggle.vue`) plus two components
-(`FocusButton.vue`, `SessionFlowView.vue`) to `--ds-*` token utilities and
-the new primitives. It deliberately does **not** restyle `SessionCard.vue`,
+This PR is **primitives and first-migration**. The Tailwind v4 upgrade, the
+`hds-tokens.css` copy, the `scripts/design/` gate scripts and the
+`design:gate` npm script all landed earlier and are already on `master`;
+this PR does not touch them. What it adds is the component layer on top:
+the six runtime dependencies those components need, the full primitive set
+(see "Primitive inventory" below), the `cn` helper and the `@/*` path
+alias, and a migration of the app shell (`web/index.html`, `App.vue`'s root
+shell, `ThemeToggle.vue`) plus two components (`FocusButton.vue`,
+`SessionFlowView.vue`) to `--ds-*` token utilities and the new primitives. It deliberately does **not** restyle `SessionCard.vue`,
 `SessionDetailDrawer.vue`, or `TranscriptTurnList.vue` — those still use raw
 Tailwind palette classes (`bg-slate-950`, `text-slate-100`, ...) exactly as
 before, because all three are owned by the follow-up Main+Rail restructure
@@ -197,8 +200,12 @@ re-deriving it.
   shim would change every unstyled border in the app. It hardcodes a gray
   default that bypasses the design system's own border token
   (`--ds-border`/`border-line`), which is exactly the class of thing the
-  hardcode lint exists to flag (and, correctly, does not flag here — the
-  lint only scans `web/src`, not `style.css`). **Exit condition:** remove
+  hardcode lint exists to flag. It does not flag it, and the reason is worth
+  recording: `web/src/style.css` *is* scanned (`.css` is in the linter's
+  extension set), but the shim line contains `var(--`, which the linter
+  treats as proof that a line is a token reference. A hardcoded fallback
+  smuggled in as the second argument of `var()` is invisible to this gate.
+  **Exit condition:** remove
   this block in the same PR that restyles `App.vue` and its components,
   once every element that relied on the implicit default gets an explicit
   `border-line` (or other token) utility instead.
@@ -250,7 +257,7 @@ re-deriving it.
   applied to Lozenge's `solid` variant). This deviation carries forward
   until the master's own Button recipe is fixed upstream.
 
-- **2026-07-31 — Design gates wired; real counts after this PR's migration.**
+- **2026-07-31 — Real gate counts after this PR's migration.**
   `npm run design:gate` still fails, but the count dropped from this PR's
   starting baseline (130 hardcode / 17 no-emoji, both measured before any
   primitive was vendored) as the in-scope files were migrated. Current,
