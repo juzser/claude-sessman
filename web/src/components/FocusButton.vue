@@ -62,7 +62,7 @@ onUnmounted(() => {
       </span>
       <span v-else>Focus tab</span>
     </Button>
-    <p v-if="state === 'error'" role="alert" class="max-w-56 text-right text-[11px] text-danger">
+    <p v-if="state === 'error'" role="alert" class="max-w-56 text-right text-caption text-danger">
       {{ errorMessage }}
     </p>
   </div>
