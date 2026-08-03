@@ -51,6 +51,17 @@ const MAX_TOOL_CALLS_PER_TURN = 40;
 const MAX_TOOL_TARGET_LENGTH = 120;
 /** Caps how many unresolved Agent/Task dispatches are retained as "currently running" so a stuck/never-returning dispatch can't balloon state. */
 const MAX_RUNNING_SUBAGENTS = 20;
+/**
+ * Caps how many sessions' IndexState TranscriptIndexCache retains at once,
+ * evicting the least-recently-accessed entry past this limit (see
+ * TranscriptIndexCache.evictOverCap). Without this, a long-lived server
+ * retains one entry per sessionId it has ever been asked about, forever.
+ * At the ~1.5-3 MB per-session worst case documented above (MAX_FLOW_TURNS),
+ * 50 sessions caps this cache at roughly 75-150 MB — generous for a
+ * single-operator dashboard's realistic working set of recently-viewed
+ * sessions, while still bounding the total.
+ */
+const MAX_CACHED_SESSIONS = 50;
 /** Tool names that dispatch a subagent — matched against tool_use.name for the "currently running" heuristic. */
 const SUBAGENT_DISPATCH_TOOL_NAMES = new Set(["Task", "Agent"]);
 /** Anchored, case-insensitive prefix match for the auto-generated post-compaction preamble — not a loose substring match. */
@@ -963,6 +974,16 @@ export class TranscriptIndexCache {
     return this.startRefresh(sessionId, transcriptPath);
   }
 
+  /** Diagnostic: number of sessions currently retained. Not used by production code paths. */
+  get size(): number {
+    return this.cache.size;
+  }
+
+  /** Test-only: exposes cache membership without the side effects reading via getSummary/getFlowSummary would have (a miss kicks off a new background refresh). */
+  hasCached(sessionId: string): boolean {
+    return this.cache.has(sessionId);
+  }
+
   private read(sessionId: string, transcriptPath: string, textLimit: number): TranscriptSummary | null {
     const state = this.resolveState(sessionId, transcriptPath);
     return state ? toSummary(state, textLimit) : null;
@@ -978,6 +999,8 @@ export class TranscriptIndexCache {
       return null;
     }
 
+    this.touch(sessionId, entry);
+
     if (!entry.pending && now - entry.fetchedAt >= this.ttlMs) {
       this.startRefresh(sessionId, transcriptPath);
     }
@@ -986,22 +1009,57 @@ export class TranscriptIndexCache {
     return current?.state ?? null;
   }
 
+  /**
+   * Marks sessionId as most-recently-ACCESSED (not just most-recently-written)
+   * for evictOverCap's purposes, by re-inserting it at the end of the Map's
+   * iteration order — the same delete-then-set idiom this file already uses
+   * for pendingSubagents ordering, rather than adding a parallel lastAccessAt
+   * timestamp field to CacheEntry.
+   */
+  private touch(sessionId: string, entry: CacheEntry): void {
+    this.cache.delete(sessionId);
+    this.cache.set(sessionId, entry);
+  }
+
+  /** Single write path for all cache mutations: writes the entry, then enforces the cap, so no call site can bypass eviction. */
+  private store(sessionId: string, entry: CacheEntry): void {
+    this.cache.set(sessionId, entry);
+    this.evictOverCap();
+  }
+
+  /**
+   * Evicts least-recently-accessed entries (oldest-first Map iteration order)
+   * until at or under MAX_CACHED_SESSIONS. Never evicts an entry with a
+   * non-null `pending` — dropping an awaited in-flight refresh would let a
+   * later resurrection of that entry (from the refresh's own .then/.catch)
+   * silently bypass the cap, and would discard work already in flight for no
+   * reason. If every over-cap entry is pending, the cache is left over cap;
+   * that transient overshoot is preferable to either of those outcomes.
+   */
+  private evictOverCap(): void {
+    for (const [sessionId, entry] of this.cache) {
+      if (this.cache.size <= MAX_CACHED_SESSIONS) break;
+      if (entry.pending) continue;
+      this.cache.delete(sessionId);
+    }
+  }
+
   private startRefresh(sessionId: string, transcriptPath: string): Promise<void> {
     const prior = this.cache.get(sessionId) ?? null;
 
     const pending = refreshOne(prior?.state ?? null, transcriptPath, sessionId, this.summarizer, this.summaryCache)
       .then((nextState) => {
-        this.cache.set(sessionId, { state: nextState, fetchedAt: Date.now(), pending: null });
+        this.store(sessionId, { state: nextState, fetchedAt: Date.now(), pending: null });
       })
       .catch(() => {
-        this.cache.set(sessionId, {
+        this.store(sessionId, {
           state: prior?.state ?? null,
           fetchedAt: Date.now(),
           pending: null,
         });
       });
 
-    this.cache.set(sessionId, {
+    this.store(sessionId, {
       state: prior?.state ?? null,
       fetchedAt: prior?.fetchedAt ?? 0,
       pending,
