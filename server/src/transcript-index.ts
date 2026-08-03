@@ -840,7 +840,7 @@ function toSummary(state: IndexState, textLimit: number): TranscriptSummary {
     // MAX_FLOW_TURNS for the flow view — see toFlowSummary below.
     recentTurns: state.recentTurns
       .slice(-MAX_RECENT_TURNS)
-      .map((turn) => turnToSummary(turn, SUMMARY_TEXT_LIMIT, summaryWindow)),
+      .map((turn) => turnToSummary(turn, textLimit, summaryWindow)),
     // Sibling-file usage (real subagent transcripts) and the inline-sidechain
     // accumulator are sourced from disjoint bytes on disk — the main
     // transcript file for the latter, `subagents/*.jsonl` for the former —

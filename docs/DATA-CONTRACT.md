@@ -367,9 +367,13 @@ turn would shift every later turn's `index`. A prompt that merely quotes or
 references the phrase later in its text (not as its own prefix) is not
 flagged.
 
-**`TranscriptTurn.summary: TurnSummary | null`** (`{ prompt: string;
-response: string }`, `server/src/summarizer.ts`) — a short LLM-generated
-ask/did pair for one turn. Which backend produces it is selected by
+**`TranscriptTurn.summary: TurnSummary | null`** (`{ response: string }`,
+`server/src/summarizer.ts`) — a short LLM-generated summary of what the
+assistant did in one turn. The user's prompt is always rendered from real
+captured text (`TranscriptTurn.prompt`) and is never LLM-summarized, so
+`TurnSummary` carries no prompt field; `SessionSummary` (`{ description:
+string }`, not currently attached to any response payload) is trimmed the
+same way. Which backend produces `TurnSummary` is selected by
 `config.summarizer.kind` (`server/src/config.ts`, wired in
 `server/src/server.ts`'s `startServer`): `"null"` (the default) uses
 `NullSummarizer`, which always resolves `null` and never spawns or contacts
@@ -432,17 +436,15 @@ Text captured for `prompt`/`gist` collapses whitespace and is capped at
 2000 chars internally (`MAX_CAPTURE_LENGTH`); display-time truncation is a
 second, separate limit — either limit being hit sets `truncated: true`.
 
-The display limit applies **only to the top-level `lastUserPrompt` and
-`lastAssistantGist`**: 400 chars via `getSummary`, 2000 via
-`getDetailSummary`. Per-turn text inside `recentTurns[]`/`turns[]` is
-always rendered at 400 chars, no matter which accessor produced it —
-`toSummary()` passes `SUMMARY_TEXT_LIMIT` to `turnToSummary()`
-unconditionally and never forwards its own `textLimit` argument, and
-`toFlowSummary()` (the `/flow` payload) does the same: it doesn't take a
-`textLimit` parameter at all and always passes `SUMMARY_TEXT_LIMIT`. So
-neither `/detail` nor `/flow` gives you longer per-turn prompts than the
-plain session list does. The raw 2000-char capture is retained in state, so
-surfacing more per turn is a one-line change, but no caller gets it today.
+The display limit applies to the top-level `lastUserPrompt`/`lastAssistantGist`
+**and**, since `getDetailSummary`, to per-turn text inside `recentTurns[]`
+too: 400 chars via `getSummary`, 2000 via `getDetailSummary`. `toSummary()`
+forwards its own `textLimit` argument to `turnToSummary()` for the
+`recentTurns[]` it builds, so `/detail` now gives every turn in its window
+the same 2000-char cap as its top-level fields. `toFlowSummary()` (the
+`/flow` payload) is unaffected: it doesn't take a `textLimit` parameter at
+all and always passes `SUMMARY_TEXT_LIMIT`, so `/flow` still caps per-turn
+text at 400 chars regardless of the transcript's raw 2000-char capture.
 
 The scanner holds a single ring buffer (`state.recentTurns`) capped at
 `MAX_FLOW_TURNS` (100 entries, oldest dropped first); each turn's `index`

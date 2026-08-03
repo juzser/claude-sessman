@@ -298,6 +298,11 @@ each time. There is no separate liveness timer.
   Flagged here rather than edited, since this is a documentation-only pass.
 - `TranscriptSummary.complete` is hardcoded `true` on every non-null
   summary — see `docs/DATA-CONTRACT.md`'s "known gap" note.
+- Closed: `/detail`'s `recentTurns[]` used to cap per-turn prompt/gist text
+  at 400 chars regardless of accessor. `toSummary()` now forwards its own
+  `textLimit` to `turnToSummary()`, so `/detail` gives every turn in its
+  window the same 2000-char cap as its top-level fields; `/flow` is
+  unaffected and still caps at 400 (see `docs/DATA-CONTRACT.md`).
 - `watcher.test.ts`'s debounce test has been observed to fail once on a
   timing fluke and pass cleanly on immediate rerun; treat a single failure
   there as a flake worth rerunning, not a regression, unless it recurs.

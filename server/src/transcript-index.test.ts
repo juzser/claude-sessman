@@ -417,6 +417,26 @@ describe("TranscriptIndexCache", () => {
     expect(detail?.lastUserPrompt?.truncated).toBe(true);
   });
 
+  it("gives /detail's recentTurns a longer per-turn prompt/gist than the plain list, at the same 2000-char cap as the top-level fields", async () => {
+    const longPrompt = "p".repeat(3000);
+    const longGist = "g".repeat(3000);
+    await writeFile(
+      transcriptPath,
+      `${userPromptLine(longPrompt, "2026-01-01T00:00:00.000Z")}\n${assistantLine(longGist, "2026-01-01T00:00:01.000Z")}\n`,
+    );
+
+    const cache = new TranscriptIndexCache();
+    await cache.refreshAndWait(sessionId, transcriptPath);
+
+    const summary = cache.getSummary(sessionId, transcriptPath);
+    expect(summary?.recentTurns[0].prompt.text.length).toBe(400);
+    expect(summary?.recentTurns[0].gist.text.length).toBe(400);
+
+    const detail = cache.getDetailSummary(sessionId, transcriptPath);
+    expect(detail?.recentTurns[0].prompt.text.length).toBe(2000);
+    expect(detail?.recentTurns[0].gist.text.length).toBe(2000);
+  });
+
   it("returns null and never throws when the transcript file doesn't exist yet", async () => {
     const cache = new TranscriptIndexCache();
     await expect(cache.refreshAndWait(sessionId, path.join(dir, "missing.jsonl"))).resolves.toBeUndefined();
