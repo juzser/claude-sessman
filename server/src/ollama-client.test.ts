@@ -29,7 +29,7 @@ describe("OllamaSummarizer", () => {
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(
         JSON.stringify({
-          response: JSON.stringify({ ask: "fix the failing test", did: "fixed the mock and reran" }),
+          response: JSON.stringify({ did: "fixed the mock and reran" }),
         }),
       );
     });
@@ -38,7 +38,7 @@ describe("OllamaSummarizer", () => {
     const summarizer = new OllamaSummarizer({ model: "fixture-model", url: fixture.url });
     const result = await summarizer.summarizeTurn({ prompt: "please fix the test", response: "done, it passes now" });
 
-    expect(result).toEqual({ prompt: "fix the failing test", response: "fixed the mock and reran" });
+    expect(result).toEqual({ response: "fixed the mock and reran" });
   });
 
   it("resolves null on a 500 from Ollama", async () => {
@@ -72,7 +72,7 @@ describe("OllamaSummarizer", () => {
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(
         JSON.stringify({
-          response: '```json\n{"ask": "add a retry", "did": "added retry with backoff"}\n```',
+          response: '```json\n{"did": "added retry with backoff"}\n```',
         }),
       );
     });
@@ -81,7 +81,7 @@ describe("OllamaSummarizer", () => {
     const summarizer = new OllamaSummarizer({ model: "fixture-model", url: fixture.url });
     const result = await summarizer.summarizeTurn({ prompt: "add retry", response: "added it" });
 
-    expect(result).toEqual({ prompt: "add a retry", response: "added retry with backoff" });
+    expect(result).toEqual({ response: "added retry with backoff" });
   });
 
   it("resolves null from summarizeSession when the reply is unparseable prose", async () => {

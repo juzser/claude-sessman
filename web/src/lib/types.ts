@@ -33,6 +33,15 @@ export interface ToolCall {
   target: string | null;
 }
 
+/**
+ * Mirrors server/src/summarizer.ts TurnSummary. The user's prompt is always
+ * rendered as real captured text and is never LLM-summarized, so this
+ * carries no prompt field.
+ */
+export interface TurnSummary {
+  response: string;
+}
+
 /** Mirrors server/src/transcript-index.ts TranscriptTurn. */
 export interface TranscriptTurn {
   /** Position of this turn across the whole transcript (not reset by the ring buffer). */
@@ -46,6 +55,8 @@ export interface TranscriptTurn {
   toolCallsOmitted: number;
   /** Deduped, insertion-ordered list of file-tool targets touched in this turn. */
   filesTouched: string[];
+  /** Populated only for the RECENT_SUMMARY_COUNT most-recently-seen turns; see server's summarizer docs. */
+  summary: TurnSummary | null;
 }
 
 /** Mirrors server/src/transcript-index.ts TranscriptSummary. */

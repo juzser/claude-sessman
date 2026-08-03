@@ -174,7 +174,7 @@ export interface TranscriptTurn {
   /** True when this turn's prompt is the post-compaction continuation preamble. */
   continuation: boolean;
   /**
-   * LLM-condensed {prompt, response} pair, present only for the
+   * LLM-condensed response summary, present only for the
    * RECENT_SUMMARY_COUNT most-recently-seen turns — never backfilled onto
    * older turns even if they were summarized in the past (see
    * `isWithinSummaryWindow` below). Null while unsummarized (no assistant
@@ -840,7 +840,7 @@ function toSummary(state: IndexState, textLimit: number): TranscriptSummary {
     // MAX_FLOW_TURNS for the flow view — see toFlowSummary below.
     recentTurns: state.recentTurns
       .slice(-MAX_RECENT_TURNS)
-      .map((turn) => turnToSummary(turn, SUMMARY_TEXT_LIMIT, summaryWindow)),
+      .map((turn) => turnToSummary(turn, textLimit, summaryWindow)),
     // Sibling-file usage (real subagent transcripts) and the inline-sidechain
     // accumulator are sourced from disjoint bytes on disk — the main
     // transcript file for the latter, `subagents/*.jsonl` for the former —

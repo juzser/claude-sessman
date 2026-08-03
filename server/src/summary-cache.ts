@@ -15,6 +15,27 @@ type TurnSummaryMap = Record<string, TurnSummary>;
  */
 const MAX_CACHED_TURNS_PER_SESSION = 20;
 
+/**
+ * Rebuild every entry from the fields TurnSummary declares today, dropping
+ * anything else. The cache file outlives the shape that wrote it: an entry
+ * written while TurnSummary still carried `prompt` holds an LLM paraphrase of
+ * the user's prompt, which the contract now forbids serving, and a plain cast
+ * would keep serving it forever because nothing re-summarizes a turn that
+ * already hits. An entry whose `response` is missing or not a string is
+ * dropped, so a truncated or hand-edited file degrades to a miss rather than
+ * to a malformed summary.
+ */
+function normalizeMap(parsed: Record<string, unknown>): TurnSummaryMap {
+  const map: TurnSummaryMap = {};
+  for (const [turnIndex, entry] of Object.entries(parsed)) {
+    if (typeof entry !== "object" || entry === null) continue;
+    const { response } = entry as { response?: unknown };
+    if (typeof response !== "string") continue;
+    map[turnIndex] = { response };
+  }
+  return map;
+}
+
 export interface SummaryCache {
   getTurn(sessionId: string, turnIndex: number): Promise<TurnSummary | null>;
   setTurn(sessionId: string, turnIndex: number, summary: TurnSummary): Promise<void>;
@@ -42,7 +63,7 @@ export function createSummaryCache(cacheDir: string): SummaryCache {
       const raw = await readFile(filePathFor(sessionId), "utf8");
       const parsed: unknown = JSON.parse(raw);
       if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return {};
-      return parsed as TurnSummaryMap;
+      return normalizeMap(parsed as Record<string, unknown>);
     } catch {
       // Missing file, unreadable, or corrupt JSON all count as an empty cache.
       return {};

@@ -32,7 +32,7 @@ describe("createSummaryCache", () => {
     const miss = await cache.getTurn(sessionId, 3);
     expect(miss).toBeNull();
 
-    const summary: TurnSummary = { prompt: "fix the test", response: "fixed it" };
+    const summary: TurnSummary = { response: "fixed it" };
     await cache.setTurn(sessionId, 3, summary);
 
     const hit = await cache.getTurn(sessionId, 3);
@@ -40,9 +40,9 @@ describe("createSummaryCache", () => {
   });
 
   it("mkdir -p's its own summaries directory", async () => {
-    await cache.setTurn(sessionId, 1, { prompt: "a", response: "b" });
+    await cache.setTurn(sessionId, 1, { response: "b" });
     const raw = await readFile(path.join(cacheDir, "summaries", `${sessionId}.json`), "utf8");
-    expect(JSON.parse(raw)).toEqual({ "1": { prompt: "a", response: "b" } });
+    expect(JSON.parse(raw)).toEqual({ "1": { response: "b" } });
   });
 
   it("treats a corrupt cache file as a miss, never a crash", async () => {
@@ -53,16 +53,48 @@ describe("createSummaryCache", () => {
     await expect(cache.getTurn(sessionId, 1)).resolves.toBeNull();
   });
 
+  it("strips fields a cache file kept from an older TurnSummary shape", async () => {
+    // A turn summarized before `prompt` was dropped from the contract still
+    // has the LLM's paraphrase of the user's prompt on disk. Nothing
+    // re-summarizes a turn that already hits, so without normalizing on read
+    // that paraphrase would be served for the life of the cache file.
+    const summariesDir = path.join(cacheDir, "summaries");
+    await mkdir(summariesDir, { recursive: true });
+    await writeFile(
+      path.join(summariesDir, `${sessionId}.json`),
+      JSON.stringify({ "4": { prompt: "paraphrased ask", response: "fixed it" } }),
+      "utf8",
+    );
+
+    const hit = await cache.getTurn(sessionId, 4);
+    expect(hit).toEqual({ response: "fixed it" });
+    expect(hit).not.toHaveProperty("prompt");
+  });
+
+  it("treats an entry with no usable response as a miss", async () => {
+    const summariesDir = path.join(cacheDir, "summaries");
+    await mkdir(summariesDir, { recursive: true });
+    await writeFile(
+      path.join(summariesDir, `${sessionId}.json`),
+      JSON.stringify({ "1": { prompt: "only a prompt" }, "2": { response: 42 }, "3": null }),
+      "utf8",
+    );
+
+    await expect(cache.getTurn(sessionId, 1)).resolves.toBeNull();
+    await expect(cache.getTurn(sessionId, 2)).resolves.toBeNull();
+    await expect(cache.getTurn(sessionId, 3)).resolves.toBeNull();
+  });
+
   it("does not lose entries when two turns of the same session are set concurrently", async () => {
     await Promise.all([
-      cache.setTurn(sessionId, 1, { prompt: "first ask", response: "first did" }),
-      cache.setTurn(sessionId, 2, { prompt: "second ask", response: "second did" }),
+      cache.setTurn(sessionId, 1, { response: "first did" }),
+      cache.setTurn(sessionId, 2, { response: "second did" }),
     ]);
 
     const first = await cache.getTurn(sessionId, 1);
     const second = await cache.getTurn(sessionId, 2);
-    expect(first).toEqual({ prompt: "first ask", response: "first did" });
-    expect(second).toEqual({ prompt: "second ask", response: "second did" });
+    expect(first).toEqual({ response: "first did" });
+    expect(second).toEqual({ response: "second did" });
   });
 
   it("prunes old entries so a long-running session's cache file stays bounded", async () => {
@@ -71,7 +103,6 @@ describe("createSummaryCache", () => {
     // long-running session with no pruning would grow this file forever.
     for (let turnIndex = 0; turnIndex < 200; turnIndex++) {
       await cache.setTurn(sessionId, turnIndex, {
-        prompt: `prompt ${turnIndex}`,
         response: `response ${turnIndex}`,
       });
     }
@@ -84,7 +115,6 @@ describe("createSummaryCache", () => {
   it("keeps the most-recent turns (by turnIndex) once pruning drops older ones", async () => {
     for (let turnIndex = 0; turnIndex < 200; turnIndex++) {
       await cache.setTurn(sessionId, turnIndex, {
-        prompt: `prompt ${turnIndex}`,
         response: `response ${turnIndex}`,
       });
     }
@@ -93,7 +123,7 @@ describe("createSummaryCache", () => {
     expect(oldest).toBeNull();
 
     const mostRecent = await cache.getTurn(sessionId, 199);
-    expect(mostRecent).toEqual({ prompt: "prompt 199", response: "response 199" });
+    expect(mostRecent).toEqual({ response: "response 199" });
   });
 });
 
@@ -112,7 +142,7 @@ describe("getOrSummarizeTurn", () => {
   });
 
   it("calls the summarizer on a miss, then never again once cached", async () => {
-    const summary: TurnSummary = { prompt: "add retry", response: "added retry with backoff" };
+    const summary: TurnSummary = { response: "added retry with backoff" };
     const summarizeTurn = vi.fn().mockResolvedValue(summary);
 
     const first = await getOrSummarizeTurn(cache, { summarizeTurn }, sessionId, 5, {
