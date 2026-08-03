@@ -6,6 +6,7 @@ import { promisify } from "node:util";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { enrichSession, enrichSessions } from "./enrich.js";
 import { GitInfoCache } from "./git-info.js";
+import { transcriptPathFor } from "./slug.js";
 import { TranscriptIndexCache } from "./transcript-index.js";
 import type { RawSessionRecord } from "./types.js";
 
@@ -189,22 +190,33 @@ describe("enrichSessions cache thrash regression (dead sessions must not evict a
 
       // Establish a realistic starting point: the operator's live sessions
       // were already read and indexed on a prior tick, before the registry
-      // grew to include many dead entries. This also makes these 3 entries
-      // strictly the oldest in the cache's insertion order, so which of the
-      // (58 total, 8 over cap) entries get evicted below is deterministic,
-      // not a race between 58 concurrently-settling promises.
+      // grew to include many dead entries.
       await enrichSessions(aliveRaws, options);
+
+      // Settle those three background refreshes before going on. getSummary
+      // fires a refresh without awaiting it, and evictOverCap refuses to
+      // evict an entry while its pending promise is unresolved -- so leaving
+      // them in flight would make these three entries un-evictable for a
+      // window of unspecified length, and the assertion below would pass for
+      // that reason rather than the one it claims to test. Awaiting here puts
+      // them in the weakest possible state: resident, settled, and the oldest
+      // entries in the cache, i.e. exactly the ones an LRU evicts first.
       for (const raw of aliveRaws) {
+        await transcriptIndexCache.refreshAndWait(
+          raw.sessionId,
+          transcriptPathFor({ projectsDir: options.claudeProjectsDir, cwd: raw.cwd, sessionId: raw.sessionId }),
+        );
         expect(transcriptIndexCache.hasCached(raw.sessionId)).toBe(true);
       }
 
       // Two simulated poll ticks (watcher.ts -> sessions-service.ts enriches
       // every registry record, dead or alive, via Promise.all, every 2s,
-      // forever). Isolating the dead subset per tick is behaviorally
-      // equivalent, for shared-cache mutation purposes, to interleaving them
-      // with the alive subset in one combined enrichSessions call: each
-      // enrichSession only interacts with the shared cache independently, and
-      // this keeps the eviction math above deterministic across test runs.
+      // forever). The dead subset is enriched on its own rather than
+      // interleaved with the alive one because, once the gate is in place,
+      // dead sessions never call getSummary at all -- there is no shared-cache
+      // interaction left to interleave, so the two shapes are indistinguishable
+      // here. Pre-fix they are equally indistinguishable, because 55 dead
+      // sessions alone already exceed the cap.
       await enrichSessions(deadRaws, options);
       await enrichSessions(deadRaws, options);
 

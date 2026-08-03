@@ -56,12 +56,14 @@ const MAX_RUNNING_SUBAGENTS = 20;
  * evicting the least-recently-accessed entry past this limit (see
  * TranscriptIndexCache.evictOverCap). Without this, a long-lived server
  * retains one entry per sessionId it has ever been asked about, forever.
- * At the ~1.5-3 MB per-session worst case documented above (MAX_FLOW_TURNS),
- * plus a further 5-10% for assistantMessageDedup/subagentIndex (see
- * docs/DATA-CONTRACT.md's "Bounding it, honestly" section for that figure's
- * own derivation), 50 sessions caps this cache at roughly 80-165 MB —
- * generous for a single-operator dashboard's realistic working set of
- * recently-viewed sessions, while still bounding the total.
+ * The recentTurns portion is the one part with a derived worst case: at the
+ * ~1.5-3 MB per session documented above (MAX_FLOW_TURNS), 50 sessions holds
+ * roughly 75-150 MB of it. An entry also carries assistantMessageDedup and
+ * subagentIndex, which have no cap of their own and grow with transcript
+ * length, so this is a bound on entry count rather than on bytes — evicting an
+ * entry is what bounds those maps at all (see docs/DATA-CONTRACT.md's
+ * "Bounding it, honestly" section). 50 is generous for a single-operator
+ * dashboard's realistic working set of recently-viewed sessions.
  */
 const MAX_CACHED_SESSIONS = 50;
 /** Tool names that dispatch a subagent — matched against tool_use.name for the "currently running" heuristic. */
