@@ -10,6 +10,7 @@ import {
   type DialogContentProps,
 } from "reka-ui"
 import { Button } from "@/components/ui/button"
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
 import { cn } from "@/lib/utils"
 import SheetOverlay from "./SheetOverlay.vue"
 
@@ -56,12 +57,18 @@ const sideClasses: Record<string, string> = {
       :class="cn('bg-background fixed z-50 flex flex-col gap-4 shadow-lg', sideClasses[side], $props.class)"
     >
       <slot />
-      <DialogClose v-if="showCloseButton" as-child>
-        <Button variant="ghost" size="icon-sm" class="absolute top-3 right-3">
-          <XIcon />
-          <span class="sr-only">Close</span>
-        </Button>
-      </DialogClose>
+      <TooltipProvider v-if="showCloseButton">
+        <Tooltip>
+          <TooltipTrigger as-child>
+            <DialogClose as-child>
+              <Button variant="ghost" size="icon-sm" class="absolute top-3 right-3" aria-label="Close">
+                <XIcon />
+              </Button>
+            </DialogClose>
+          </TooltipTrigger>
+          <TooltipContent>Close</TooltipContent>
+        </Tooltip>
+      </TooltipProvider>
     </DialogContent>
   </DialogPortal>
 </template>
