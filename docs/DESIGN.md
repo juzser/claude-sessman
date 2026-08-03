@@ -302,7 +302,7 @@ re-deriving it.
   starting baseline (130 hardcode / 17 no-emoji, both measured before any
   primitive was vendored) as the in-scope files were migrated. Current,
   honest counts, each attributed:
-  - **Hardcode lint: 97 violations** (`python3 scripts/design/lint_hardcodes.py
+  - **Hardcode lint: 93 violations** (`python3 scripts/design/lint_hardcodes.py
     web/src`), by file:
     - `SessionDetailDrawer.vue` (37), `TranscriptTurnList.vue` (11),
       `SessionCard.vue` (16) and `App.vue` (16, its remaining
@@ -316,13 +316,14 @@ re-deriving it.
       lint scans `web/src` broadly and the tokens file happens to live
       under it, but its contents are never edited locally (see
       "Declarations" above).
-    - `web/src/lib/time-ago.test.ts` (4) — false-positive matches on
-      duration-string test fixtures (`"5s"`, `"59s"`, `"45s"`), not styling
-      values. **This is already fixed upstream** (the master's
-      `lint_hardcodes.py` now skips test files), but that fix has not been
-      re-copied into this repo yet; re-copying the script is a separate,
-      later change. Once it lands, this repo's count drops from 97 to 93
-      with no code change here.
+    - `web/src/lib/time-ago.test.ts` no longer appears. It previously
+      contributed 4 false positives — duration-string test fixtures (`"5s"`,
+      `"59s"`, `"45s"`) read as styling values — which is what prompted the
+      upstream fix (`juzser/hans#115`). The master's `lint_hardcodes.py` now
+      skips test files by default, that script has been re-copied here, and
+      the count fell 97 → 93 with no code change. The scan line now reports
+      the skip explicitly (`Skipped 10 test file(s)`), so it cannot be
+      misread as a clean pass.
     - `SessionFlowView.vue` (3) and `FocusButton.vue` (1) — `text-[11px]`
       hardcodes in files this PR *did* migrate. Left as-is: the nearest
       token, `text-caption`/`text-xs`, is 12px, one pixel larger, and
@@ -353,10 +354,9 @@ re-deriving it.
       were rewritten before this count was taken.
   None of the remaining findings are a regression from this PR — each is
   either a pre-existing file this PR deliberately does not touch (with a
-  reason above), the byte-identical tokens copy, a pending-but-not-yet-
-  applied upstream fix, or a disclosed one-pixel non-token gap. **Exit
-  condition:** the Main+Rail restructure resolves the four deferred files at
-  once (by migrating them, rewriting them, or dropping them), and the
-  hardcode-lint script's test-file-skip fix is re-copied from master.
+  reason above), the byte-identical tokens copy, or a disclosed one-pixel
+  non-token gap. **Exit condition:** the Main+Rail restructure resolves the
+  four deferred files at once, by migrating them, rewriting them, or
+  dropping them.
   Adherence lint is a separate, permanent gap for this repo — see the "Gates
   wired" section above, not repeated here.

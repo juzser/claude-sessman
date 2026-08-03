@@ -8,11 +8,18 @@ Usage:
   python3 scripts/lint_hardcodes.py src/components            # a dir
   python3 scripts/lint_hardcodes.py Button.tsx Card.vue       # files
   python3 scripts/lint_hardcodes.py --ext .tsx,.vue src/
+  python3 scripts/lint_hardcodes.py --include-tests src/      # lint test files too
 
 Flags a line with a raw hex color, px length, or ms/s duration UNLESS it:
   - is inside a CSS var / token reference (var(--…), {token…}, theme(…)),
   - is a token-definition file (tokens/*.json),
   - carries an inline allow comment containing 'ds-allow-hardcode'.
+
+Test files are skipped by default. A test asserting that 5 seconds formats as
+'5s', or that a component renders '16px', is stating a fact about the code under
+test — it is not drift, and there is no token to replace it with. Pass
+--include-tests to lint them anyway. The skipped count is always printed, so a
+skip can never read as a clean scan.
 Exit 0 = clean, 1 = violations found.
 """
 import re
@@ -37,17 +44,44 @@ TOKEN_CTX = re.compile(r"var\(--|theme\(|tokens?[./]|\{[\w.\-]+\}|--[\w\-]+\s*:"
 ALLOW = "ds-allow-hardcode"
 # px values that are conventionally fine (hairlines, zero, 1px borders) — still reported as info? keep strict but allow 0/1px
 PX_OK = {"0px", "1px"}
+# test files: Button.test.tsx, time-ago.spec.ts, anything under __tests__/ or tests/
+TEST_NAME = re.compile(r"\.(test|spec)\.[^.]+$")
+TEST_DIRS = {"__tests__", "tests", "test"}
 
 
-def iter_files(paths, exts):
+def is_test_file(path, root=None):
+    """True for a test file. Directory checks use the path RELATIVE to the scanned
+    root, so a project that merely lives under a directory named 'test' is not
+    silently skipped whole."""
+    if TEST_NAME.search(path.name):
+        return True
+    parts = path.parts
+    if root is not None:
+        try:
+            parts = path.relative_to(root).parts
+        except ValueError:
+            pass
+    return any(part in TEST_DIRS for part in parts)
+
+
+def iter_files(paths, exts, include_tests=False):
+    """Yields (file, skipped_as_test) so the caller can report what it did not lint."""
     for p in paths:
         pp = Path(p)
         if pp.is_dir():
-            for f in pp.rglob("*"):
-                if f.suffix in exts and "node_modules" not in f.parts:
-                    yield f
+            for f in sorted(pp.rglob("*")):
+                # node_modules is matched relative to the scanned root for the same
+                # reason as TEST_DIRS: an absolute path can contain anything.
+                rel = f.relative_to(pp).parts
+                if f.suffix in exts and "node_modules" not in rel:
+                    if not include_tests and is_test_file(f, pp):
+                        yield f, True
+                    else:
+                        yield f, False
         elif pp.is_file() and pp.suffix in exts:
-            yield pp
+            # An explicitly named file is still skipped if it is a test file, so that
+            # `lint *.ts` and `lint .` agree. --include-tests overrides both.
+            yield pp, not include_tests and is_test_file(pp)
 
 
 def lint_line(line, tailwind=True):
@@ -79,6 +113,7 @@ def lint_line(line, tailwind=True):
 def main(argv):
     exts = CODE_EXT
     tailwind = True
+    include_tests = False
     args = []
     i = 0
     while i < len(argv):
@@ -88,6 +123,9 @@ def main(argv):
         elif argv[i] in ("--no-tw", "--no-tailwind"):
             tailwind = False
             i += 1
+        elif argv[i] == "--include-tests":
+            include_tests = True
+            i += 1
         else:
             args.append(argv[i])
             i += 1
@@ -95,7 +133,9 @@ def main(argv):
         print(__doc__)
         return 0
 
-    files = list(iter_files(args, exts))
+    found = list(iter_files(args, exts, include_tests))
+    files = [f for f, skipped in found if not skipped]
+    skipped_tests = sum(1 for _, skipped in found if skipped)
     violations = 0
     for f in files:
         try:
@@ -116,7 +156,11 @@ def main(argv):
                 print(f"{f}:{n}: hardcoded {kind} '{val}' — use a token")
                 violations += 1
 
-    print(f"\nScanned {len(files)} file(s).")
+    skipped_note = ""
+    if skipped_tests:
+        skipped_note = (f" Skipped {skipped_tests} test file(s) — "
+                        f"pass --include-tests to lint them.")
+    print(f"\nScanned {len(files)} file(s).{skipped_note}")
     if violations:
         print(f"FAIL: {violations} hardcoded value(s). Map each to a token, "
               f"or add a '{ALLOW}' comment for a justified exception.")
