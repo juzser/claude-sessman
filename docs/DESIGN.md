@@ -6,22 +6,26 @@ specifics. On conflict, the master wins — flag the conflict, don't fork the
 rule. This repo must also have a row in the master's adopters registry; the
 two land together.
 
-This PR is **primitives and first-migration**. The Tailwind v4 upgrade, the
-`hds-tokens.css` copy, the `scripts/design/` gate scripts and the
-`design:gate` npm script all landed earlier and are already on `master`;
-this PR does not touch them. What it adds is the component layer on top:
-the six runtime dependencies those components need, the full primitive set
-(see "Primitive inventory" below), the `cn` helper and the `@/*` path
-alias, and a migration of the app shell (`web/index.html`, `App.vue`'s root
-shell, `ThemeToggle.vue`) plus two components (`FocusButton.vue`,
-`SessionFlowView.vue`) to `--ds-*` token utilities and the new primitives. It deliberately does **not** restyle `SessionCard.vue`,
-`SessionDetailDrawer.vue`, or `TranscriptTurnList.vue` — those still use raw
-Tailwind palette classes (`bg-slate-950`, `text-slate-100`, ...) exactly as
-before, because all three are owned by the follow-up Main+Rail restructure
-task, which reshapes the same markup it would restyle. `App.vue`'s
-header/input/banner/error-state chrome is deferred to that task for the same
-reason. See "Known deviations" below for the exact gate counts this leaves
-and what the follow-up PR inherits.
+Adoption landed in three passes, all now complete:
+
+1. **Infrastructure** — the Tailwind v3→v4 upgrade (forced: HDS 3.0.0's
+   tokens are `@theme inline` and fail *silently* on v3), the
+   `hds-tokens.css` copy, the `scripts/design/` gate scripts and the
+   `design:gate` npm script.
+2. **Primitives and first migration** — the runtime dependencies, the full
+   primitive set (see "Primitive inventory" below), the `cn` helper and the
+   `@/*` path alias, and a migration of the app shell plus `FocusButton.vue`
+   and `SessionFlowView.vue` to `--ds-*` token utilities.
+3. **Main+Rail restructure** — the rest. Every `.vue` under `web/src` now
+   uses token utilities; no raw Tailwind palette class (`bg-slate-950`,
+   `text-slate-100`, ...) survives in app code. `SessionDetailDrawer.vue`
+   and `TranscriptTurnList.vue` were not migrated but **deleted** — the
+   restructure replaced the drawer with a Sheet and the turn list with a
+   per-card `TurnStrip.vue`, so migrating them first would have been work
+   thrown away.
+
+See "Known deviations" below for what this leaves open, with the real gate
+output for each.
 
 ## Declarations
 
@@ -73,10 +77,18 @@ of this doc said the opposite.
 
 ## Charts and illustrations
 
-Neither is used in this repo. No charting library, no Open Doodle SVGs.
-Delete this section if a future PR still finds neither applicable, or fill
-it in per `profile/charts.md` / `profile/illustrations.md` when one is
-introduced.
+No chart is drawn and no illustration asset set exists here: no charting
+library, no Open Doodle SVGs.
+
+The **chart palette tokens are used**, though, for the one thing the token
+file's own comment sanctions besides charts — `web/src/lib/identicon.ts`
+derives each session card's avatar gradient from `--ds-chart-1..8`. The
+comment above those tokens reads: "For charts, avatars, and other
+decorative-categorical colouring — never for status semantics. Assign in
+order; cap at 8 series." The avatar is decorative-categorical (it
+distinguishes two sessions in the same project at a glance) and carries no
+status meaning; status lives on the card's Lozenge alone. See "Known
+deviations" for the AA evidence behind the gradient's darkened stop.
 
 ## Gates wired
 
@@ -123,16 +135,17 @@ the real output and why it's deferred rather than fixed here.
 
 ## Status → lozenge mapping (app-wide, fixed)
 
-Lozenge is now vendored (see "Primitive inventory" above), but nothing in
-the running UI uses this specific mapping yet: `SessionCard.vue` still
-shows connection state as a plain colored dot
-(`bg-emerald-400`/`bg-amber-400`/`bg-slate-500`), not a lozenge, because
-`SessionCard.vue` is out of this PR's scope by mandate. `SessionFlowView.vue`
-does use the vendored Lozenge in this PR, but for a different, unrelated
-notice (how many turns were trimmed from the flow graph), not for
-connection status. This table records the intended mapping for when
-`SessionCard.vue` is migrated, so that follow-up PR doesn't have to invent
-one.
+There are **two** status axes in this UI, and they must not be conflated:
+
+| Axis | What it reports | Where it renders |
+|---|---|---|
+| Socket connection | Whether *the dashboard* is receiving updates | `ConnectionLozenge.vue`, once, in the header |
+| Session status | Whether *one session* is working, waiting, stale or ended | `SessionCard.vue`'s Lozenge, once per card |
+
+`SessionFlowView.vue` also uses a Lozenge, but for neither axis — it carries
+a notice about how many turns were trimmed from the flow graph.
+
+### Socket connection
 
 The domain statuses are exactly the members of `ConnectionState` in
 `web/src/lib/ws-client.ts` (`"connecting" | "open" | "reconnecting" |
@@ -146,14 +159,33 @@ them:
 | `reconnecting` | warning-subtle | Every retry after a drop. Degraded but still trying: not `danger` (nothing has failed for good) and not `info` (it has to read differently from a first connect). |
 | `closed` | neutral-subtle | `setState("closed")` is reached only from the client's own `close()`, a deliberate teardown rather than a failure, so it belongs to "default, unset" and not to `danger`. |
 
-**Carry-forward for the visual PR.** `App.vue`'s `showDisconnectBanner`
-currently treats `closed` and `reconnecting` identically ("Lost connection,
-retrying"), which contradicts the `closed` row above. That is invisible
-today only by coincidence: the sole `close()` call site is
-`useSessions.ts`'s `onUnmounted` hook, so by the time the state is `closed`
-the component tree is already being torn down and the banner never paints.
-Split the two states when the banner is restyled instead of relying on that
-coincidence.
+**Closed 2026-08-03.** `App.vue` used to derive a `showDisconnectBanner`
+boolean that treated `closed` and `reconnecting` identically ("Lost
+connection, retrying"), contradicting the `closed` row above. That was
+invisible only by coincidence — the sole `close()` call site is
+`useSessions.ts`'s `onUnmounted` hook, so by the time the state was `closed`
+the tree was already being torn down and the banner never painted. The
+derived boolean is gone. `ConnectionLozenge.vue` renders all four states
+from the table above directly, and it is **always mounted**, never `v-if`'d
+away: its `aria-live="polite"` wrapper would not reliably announce a region
+that appears at the same instant its text does.
+
+### Session status
+
+Mapped in `SessionCard.vue` from `statusVisualFor(status, alive)`:
+
+| Domain status | Lozenge | Label |
+|---|---|---|
+| `busy` | warning-subtle | "Working" |
+| `idle` | success-subtle | "Waiting on you" |
+| `stale` | neutral-subtle | "Stale" |
+| `dead` | neutral-subtle | "Ended" |
+
+`busy` → warning and `idle` → success is a deliberate deviation from the
+six-family semantics, at the operator's explicit instruction; see "Known
+deviations". The tone lives on that one Lozenge — the card surface behind it
+is identical for every status, so a wall of cards does not become a wall of
+colour.
 
 ## Reference pages (normative)
 
@@ -161,30 +193,50 @@ coincidence.
 
 | Template | Reference |
 |---|---|
-| App shell | *(not yet built)* |
-| Page shell (Template 5 wrapper) | *(not yet built)* |
-| 5A — overview, stat row + rail | *(not yet built)* |
-| 5B — overview, single column | *(not yet built)* |
-| 6 — full-canvas (if any) | *(not yet built)* |
+| App shell | `web/src/App.vue` — header (title, connection Lozenge, search Input, sort Button, ThemeToggle) over the page body |
+| Page shell (Template 5 wrapper) | `web/src/App.vue` — the two-column grid: session cards left, `AggregatePanel.vue` rail right |
+| 5A — overview, stat row + rail | `web/src/components/AggregatePanel.vue` — `TokenUsageRailCard.vue` (hero figures) + `RunningSubagentsRailCard.vue` |
+| 5B — overview, single column | *(not built — there is no second page)* |
+| 6 — full-canvas (if any) | `web/src/components/SessionFlowView.vue` inside `SessionFlowSheet.vue` — the Vue Flow pane is the closest thing to a full-canvas surface here, but it lives in a Sheet, not a page |
 
-`App.vue` is the only page today and predates this adoption — it does not
-yet follow any Template 5 structure. This table is intentionally empty; the
-visual-adoption PR fills it in as it restyles `App.vue` into the first
-reference page.
+`App.vue` is still the only page. It now follows Template 5's main+rail
+structure rather than the flat card list it predated this adoption with.
+There is no router and no second route, so the "app shell" and "page shell"
+rows point at the same file: the distinction the template draws between them
+has no load to carry until a second page exists.
 
 ## Repo-specific patterns
 
-None yet beyond what's already documented in the repo's own `CLAUDE.md`
-(`composables/useSessions.ts` for the fetch+WS-subscribe pattern). This PR
-adds one: theme persistence in `ThemeToggle.vue` resolves in the order
-`localStorage` → `prefers-color-scheme` → dark fallback; any future control
-that needs to read or change theme should reuse that order rather than
-re-deriving it.
+Beyond what's already documented in the repo's own `CLAUDE.md`
+(`composables/useSessions.ts` for the fetch+WS-subscribe pattern):
+
+- **Theme persistence** in `ThemeToggle.vue` resolves in the order
+  `localStorage` → `prefers-color-scheme` → dark fallback. Any future
+  control that reads or changes theme should reuse that order rather than
+  re-deriving it.
+- **Summarized and unsummarized text share one slot.** A card's description
+  takes the LLM `description` when there is one and the raw last prompt
+  otherwise; the turn strip's reply line takes the LLM `response` or the raw
+  gist. Same slot, same classes either way — nothing marks which of the two
+  the operator is reading. This is on purpose: the summarizer is optional
+  and off by default (`SESSMAN_SUMMARIZER=null`), so a visual "this was
+  summarized" marker would turn a config choice into a UI inconsistency.
+- **The operator's own prompt is never summarized and never re-flowed.**
+  Both the turn strip and the expanded flow node render `turn.prompt.text`
+  verbatim with `whitespace-pre-wrap`, so the line breaks they typed
+  survive. Height is capped structurally (`line-clamp-3` in the strip, a
+  `max-h-64 overflow-y-auto` region in the node) rather than by truncating
+  the text. The collapsed flow node is the one exception: it shows a
+  140-char single-line preview, with the whole text one click away.
+- **Rail figures are folded, never fetched.** `useAggregateUsage.ts` derives
+  the rail from the same session list the grid renders. Any future
+  cross-session figure belongs in that composable, not in a new request —
+  a second source could disagree with the cards beside it.
 
 ## Known deviations
 
-- **2026-07-31 — Tailwind v4 border-color compat shim kept.** The
-  `@tailwindcss/upgrade` codemod added a compatibility block to
+- **2026-07-31 — Tailwind v4 border-color compat shim. Closed 2026-08-03.**
+  The `@tailwindcss/upgrade` codemod had added a compatibility block to
   `web/src/style.css`:
   ```css
   @layer base {
@@ -194,21 +246,28 @@ re-deriving it.
   }
   ```
   Tailwind v4 changed the default border color from a fixed gray to
-  `currentcolor`; this shim restores the v3 default so every existing
-  border-using element keeps its current appearance. It is kept
-  deliberately — this PR is visually neutral by mandate, and removing the
-  shim would change every unstyled border in the app. It hardcodes a gray
-  default that bypasses the design system's own border token
-  (`--ds-border`/`border-line`), which is exactly the class of thing the
-  hardcode lint exists to flag. It does not flag it, and the reason is worth
-  recording: `web/src/style.css` *is* scanned (`.css` is in the linter's
-  extension set), but the shim line contains `var(--`, which the linter
-  treats as proof that a line is a token reference. A hardcoded fallback
-  smuggled in as the second argument of `var()` is invisible to this gate.
-  **Exit condition:** remove
-  this block in the same PR that restyles `App.vue` and its components,
-  once every element that relied on the implicit default gets an explicit
-  `border-line` (or other token) utility instead.
+  `currentcolor`; the shim restored the v3 default so every border-using
+  element kept its appearance through the migration. It was kept while the
+  primitive work was visually neutral by mandate, and its exit condition was
+  "remove it in the same PR that restyles `App.vue` and its components, once
+  every element that relied on the implicit default gets an explicit token
+  utility instead". This is that PR, and the condition is met: every bare
+  `border`/`border-b`/`border-t` utility left in `web/src` sits beside an
+  explicit colour (`border-line` in `App.vue`, `SessionFlowView.vue`,
+  `SessionFlowSheet.vue`, `SheetContent.vue`, `Button`, `Lozenge`;
+  `border-input` in `Input.vue`; `border-transparent` in `Switch.vue`), there
+  are no `<style>` blocks anywhere in the tree, and Vue Flow's own stylesheet
+  is imported unlayered so `@layer base` never reached it. The block is
+  deleted; a comment in its place says not to reintroduce it.
+
+  Worth keeping on record: while it was there, the shim hardcoded a gray that
+  bypassed the design system's own border token (`--ds-border`/`border-line`)
+  and the hardcode lint never flagged it. `web/src/style.css` *is* scanned
+  (`.css` is in the linter's extension set), but the shim line contains
+  `var(--`, which the linter treats as proof that a line is a token
+  reference. **A hardcoded fallback smuggled in as the second argument of
+  `var()` is invisible to this gate** — an upstream blind spot that outlives
+  this particular shim.
 
 - **2026-07-31 — Correction: the shadcn bridge is consumed, on purpose.**
   An earlier draft of this entry (written before any primitive was vendored)
@@ -303,29 +362,53 @@ re-deriving it.
   byte-identical check in `adopters.md` covers `tokens.css` and the gate
   scripts; a wrong token inside a `cva` map is invisible to every gate we run.
 
-- **2026-08-03 — Remaining hand-port drift in `Button`/`Card`, deliberately not
-  fixed here.** A design review comparing each vendored primitive against the
-  pack *source* (not against the spec prose) surfaced five more divergences.
-  None was introduced by the primitive work above, all are inert or
-  near-invisible today, and each would change pixels in files the restructure
-  is about to rewrite — so they are recorded rather than fixed mid-flight:
-  - Base radius: `rounded-control` (6px) is applied to every size. The pack's
-    `.hds-btn` base is `--ds-radius-lg` and only `sm`/`xs`/`icon-sm`/`icon-xs`
-    step down to `--ds-radius-control`, so `default` and `icon` are 2px off.
-  - `outline`: `bg-transparent` vs. the pack's `background:var(--ds-surface)`.
-    Most visible in dark mode.
-  - `secondary`: `bg-surface-sunken` + an opacity hover vs. the pack's
-    `--ds-neutral-subtle` ground with a text-colour-only hover — a different
-    token *and* a different hover mechanism.
-  - `inverse` / `inverse-ghost`: hardcoded (`bg-surface text-fg`,
-    `hover:bg-white/10`) instead of building from the ground-aware
-    `--ds-btn-fg` / `--ds-btn-ground` custom properties. Inert here: `Highlight`,
-    the surface that publishes them, is not vendored in this repo.
-  - `Card` ring: `ring-line` (`--ds-border`) rather than the pack's
-    `--ds-ring-card` composite, which `hds-tokens.css` already exposes as
-    `shadow-ring-card`. Near-identical in light, slightly duller in dark.
-  **Exit condition:** fold into the restructure PR, which is already rewriting
-  the markup that consumes these variants.
+- **2026-08-03 — Remaining hand-port drift in `Button`/`Card`. Closed the same
+  day, in this PR.** A design review comparing each vendored primitive against
+  the pack *source* (not against the spec prose) surfaced five more
+  divergences. None was introduced by the primitive work above; the recorded
+  exit condition was "fold into the restructure PR, which is already rewriting
+  the markup that consumes these variants", and that is what happened. All
+  five, and what closing each one turned up:
+  - **Base radius.** `rounded-control` (6px) was applied to every size; the
+    pack's `.hds-btn` base is `--ds-radius-lg` and only
+    `sm`/`xs`/`icon-sm`/`icon-xs` step down. The base is now `rounded-lg` and
+    those four sizes carry an explicit `rounded-control`. Deliberately *not*
+    left to `twMerge` to dedupe: this repo's `cn` is a bare `twMerge` with no
+    custom class-group config, so it does not recognise a non-standard name
+    like `rounded-control` as conflicting with `rounded-lg` — both would
+    render and CSS source order would decide. Every size entry therefore sets
+    exactly one radius class.
+  - **`outline`.** `bg-transparent` → `bg-surface`, matching the pack's
+    `background:var(--ds-surface)`.
+  - **`secondary`.** `bg-surface-sunken` + an opacity hover → `bg-neutral-subtle
+    text-fg-subtle hover:text-fg` — the pack's ground *and* its
+    text-colour-only hover, which changes no background on hover at all.
+  - **`inverse` / `inverse-ghost`.** Were hardcoded (`bg-surface text-fg`,
+    `hover:bg-white/10`). `Highlight`, the surface that publishes
+    `--ds-btn-fg`/`--ds-btn-ground`, is still not vendored here, so rather than
+    leave them hardcoded they now read those custom properties with a fallback
+    equal to the previous rendered value — `bg-[color:var(--ds-btn-fg,var(--ds-surface))]`
+    and friends. Visually identical today; picks up a real ground automatically
+    the day `Highlight` lands. The hover also switched from a background-opacity
+    blend to the pack's plain `opacity:.88`.
+  - **`Card` ring.** `ring-1 ring-line shadow-raised` → a single
+    `shadow-[var(--ds-ring-card),var(--ds-shadow-raised)]`. The obvious fix —
+    applying the exposed `shadow-ring-card` utility next to `shadow-raised` —
+    **does not work**, and this is worth recording: both utilities write the
+    same `--tw-shadow` custom property, so as two classes one silently
+    overwrites the other and only CSS source order decides which. The pack's
+    own recipe is one declaration with two comma-joined shadows, so that is
+    what is reproduced. Both halves are still the same tokens those two
+    utilities expose; no raw value is hardcoded.
+
+  Each arbitrary value above was verified against real `vite build` output
+  rather than trusted from Tailwind v4 syntax memory — including that the
+  `color-mix` hover emits both a plain fallback rule and a `@supports`-gated
+  enhanced one. Gate, tests and typecheck were re-measured after the change and
+  are unchanged (23 files / 199 tests passing, `vue-tsc` exit 0, the same 9
+  vendored-file hardcode findings recorded below). No `Button`/`Card` test
+  asserted the old class strings, so no assertion needed updating — which is
+  the same exposure the size-map defect above already illustrated.
 
 - **2026-08-03 — `destructive` follows the profile, and the master disagrees
   with itself.** `profile/components.md` specifies a filled destructive button
@@ -337,84 +420,148 @@ re-deriving it.
   primary/dark-mode contrast entry above. **Exit condition:** upstream picks
   one; this repo follows whichever survives.
 
-- **2026-08-03 — `Sheet` has no consumer, so its dialog a11y contract is
-  untested, not satisfied.** `SheetContent.test.ts` passes while reka-ui logs
-  `DialogContent requires a DialogTitle` and `Missing Description or
-  aria-describedby`. Those come from the test fixture mounting a bare body, not
-  from the primitive: reka-ui puts the title/description obligation on the
-  *consumer*, and no `.vue` in `web/src` imports `ui/sheet` yet. It is a
-  fixture artifact today and a real a11y gap the moment someone wires the first
-  `<Sheet>`. **Exit condition:** the first real consumer supplies a
-  `SheetTitle` (visually hidden if the design has no visible one).
+- **2026-08-03 — `Sheet` had no consumer, so its dialog a11y contract was
+  untested rather than satisfied. Closed the same day, in this PR.**
+  `SheetContent.test.ts` passed while reka-ui logged `DialogContent requires a
+  DialogTitle` and `Missing Description or aria-describedby`. Those came from
+  the test fixture mounting a bare body, not from the primitive: reka-ui puts
+  the title/description obligation on the *consumer*, and at the time no `.vue`
+  in `web/src` imported `ui/sheet`. The recorded exit condition was "the first
+  real consumer supplies a `SheetTitle` (visually hidden if the design has no
+  visible one)". `SessionFlowSheet.vue` is that consumer and supplies both, and
+  both are visible rather than hidden — `SheetTitle` carries the session name,
+  `SheetDescription` its path (with the full `cwd` on the element's `title`,
+  since the visible text is truncated). The fixture-level warnings in
+  `SheetContent.test.ts` remain, and remain a fixture artifact.
 
-- **2026-07-31 — `Icon`'s size scale has no 10px step (upstream gap).**
-  `ThemeToggle.vue` needs a `size-2.5` glyph, and `Icon`'s `cva` scale
-  (`xs`/`sm`/`default`/`md`/`lg` = 3/3.5/4/5/6) has no step that small, so it
-  and three other new call sites import the lucide component directly instead
-  of routing through the `Icon` primitive as the convention asks. Reported as
-  a missing step in the master's scale rather than patched around locally.
+- **2026-07-31 — `Icon`'s size scale has no 10px step (upstream gap).
+  Still open, but narrower as of 2026-08-03.** `ThemeToggle.vue` needs a
+  `size-2.5` glyph to sit inside the Switch thumb, and `Icon`'s `cva` scale
+  (`xs`/`sm`/`default`/`md`/`lg` = 3/3.5/4/5/6) has no step that small, so its
+  two lucide glyphs are rendered directly rather than routed through the `Icon`
+  primitive as the convention asks. Reported as a missing step in the master's
+  scale rather than patched around locally.
+
+  The original entry also claimed "three other new call sites" did the same.
+  That is no longer true and was not carried forward: `TurnStrip.vue`
+  (`Maximize2`, `ChevronRight`) and `FocusButton.vue` (`Check`) all import the
+  lucide component and pass it to `<Icon :icon="…" size="sm" />`, which *is*
+  the convention — importing the lucide symbol is expected; bypassing the
+  wrapper is not. `ThemeToggle.vue` is the only remaining bypass in app code.
   **Exit condition:** upstream adds the step, or the convention is relaxed.
 
-- **2026-07-31 — Real gate counts after this PR's migration.**
-  `npm run design:gate` still fails, but the count dropped from this PR's
-  starting baseline (130 hardcode / 17 no-emoji, both measured before any
-  primitive was vendored) as the in-scope files were migrated. Current,
-  honest counts, each attributed:
-  - **Hardcode lint: 93 violations** (`python3 scripts/design/lint_hardcodes.py
-    web/src`), by file:
-    - `SessionDetailDrawer.vue` (37), `TranscriptTurnList.vue` (11),
-      `SessionCard.vue` (16) and `App.vue` (16, its remaining
-      header/input/banner/error-state chrome) — deliberately not migrated.
-      All four are owned by the follow-up Main+Rail restructure task, which
-      rewrites this markup rather than merely recolouring it; the drawer and
-      the turn list may not survive that restructure at all. Migrating them
-      here would be work thrown away, so the restructure PR carries them.
-    - `hds-tokens.css` (8) — hex/px values inside the byte-identical vendor
-      copy of the master's own tokens file. Not this repo's to fix; the
-      lint scans `web/src` broadly and the tokens file happens to live
-      under it, but its contents are never edited locally (see
-      "Declarations" above).
-    - `web/src/lib/time-ago.test.ts` no longer appears. It previously
-      contributed 4 false positives — duration-string test fixtures (`"5s"`,
-      `"59s"`, `"45s"`) read as styling values — which is what prompted the
-      upstream fix (`juzser/hans#115`). The master's `lint_hardcodes.py` now
-      skips test files by default, that script has been re-copied here, and
-      the count fell 97 → 93 with no code change. The scan line now reports
-      the skip explicitly (`Skipped 10 test file(s)`), so it cannot be
-      misread as a clean pass.
-    - `SessionFlowView.vue` (3) and `FocusButton.vue` (1) — `text-[11px]`
-      hardcodes in files this PR *did* migrate. Left as-is: the nearest
-      token, `text-caption`/`text-xs`, is 12px, one pixel larger, and
-      swapping it would be a real (if tiny) visual change outside this
-      PR's visually-neutral mandate for these two labels.
-    - `TooltipContent.vue` (1) — `rounded-[2px]` on the tooltip arrow,
-      copied verbatim from shadcn-vue's own stock recipe. Same reasoning as
-      the two above: not worth a bespoke token for one arrow corner.
-  - **No-emoji lint: 16 findings** (`python3 scripts/design/check_no_emoji.py
-    web/src CLAUDE.md docs/DESIGN.md`; not part of `npm run design:gate`
-    directly, since that script's `&&` chain never reaches it while the
-    hardcode lint fails), by file:
-    - `App.vue` (1), `SessionCard.vue` (4), `SessionDetailDrawer.vue` (5),
-      `SessionFlowView.vue` (2) — em-dashes in pre-existing template copy,
-      untouched by this PR for the same reasons as the hardcode-lint
-      attribution above.
-    - `web/src/lib/identicon.ts` (4) — decorative pictographs (a star, a
-      four-pointed sparkle, a plus, and a hamburger-menu glyph) in the
-      avatar glyph set. (Deliberately described rather than reproduced here;
-      quoting the literal characters would trip this same gate against this
-      file.) Out of scope for this PR.
-    - This is one *better* than the 17-finding baseline: `FocusButton.vue`'s
-      literal check-mark glyph (previously appended to its "Focused" label)
-      is gone, replaced by the vendored `Icon` primitive rendering lucide's
-      `Check` next to the plain text label, and the five em-dashes this PR's
-      own new primitive comments introduced along the way (`ThemeToggle.vue`,
-      `Banner.vue`, `SheetOverlay.vue`, `SheetContent.vue`, `SheetTitle.vue`)
-      were rewritten before this count was taken.
-  None of the remaining findings are a regression from this PR — each is
-  either a pre-existing file this PR deliberately does not touch (with a
-  reason above), the byte-identical tokens copy, or a disclosed one-pixel
-  non-token gap. **Exit condition:** the Main+Rail restructure resolves the
-  four deferred files at once, by migrating them, rewriting them, or
-  dropping them.
-  Adherence lint is a separate, permanent gap for this repo — see the "Gates
-  wired" section above, not repeated here.
+- **2026-08-03 — `busy` is warning and `idle` is success, at the operator's
+  instruction.** The six-family semantics would read a working session as
+  "in progress" (info) and a session sitting at a prompt as unremarkable
+  (neutral). This repo inverts the weight: `busy` → `warning-subtle`
+  ("Working"), `idle` → `success-subtle` ("Waiting on you"). The reason is what
+  the dashboard is *for* — it is scanned to answer "which session needs me
+  right now", and the answer is the idle one, so idle is the state that should
+  read as ready rather than as absence. Amber for busy is the complement: not a
+  fault, just "do not expect an answer here yet".
+
+  Two operator instructions pin this, both after seeing it rendered: *"Chỉ cần
+  indicator đổi màu, ko cần đổi cả block session"* (only the indicator changes
+  colour, not the whole session block) and *"Giữ nguyên màu hiện tại"* (keep
+  the current colours). The first is the load-bearing half: because the tone is
+  confined to one Lozenge and never reaches the card surface, a grid of twenty
+  sessions does not become a wall of amber, which is the actual harm the
+  six-family rule guards against. **Exit condition:** none while the operator
+  holds this preference. Flagged, not forked.
+
+- **2026-08-03 — Avatar gradients use the chart palette, darkened to 80%.**
+  Two parts, one sanctioned and one a real deviation.
+
+  The palette use itself is sanctioned, not a deviation: `hds-tokens.css`'s own
+  comment above `--ds-chart-1..8` reads "For charts, avatars, and other
+  decorative-categorical colouring — never for status semantics", and
+  `lib/identicon.ts` uses them for exactly that. The avatar distinguishes two
+  sessions in the same project at a glance and carries no status meaning;
+  status lives on the card's Lozenge alone.
+
+  The deviation is that the tokens are not used at full strength. Each stop is
+  `color-mix(in srgb, var(--ds-chart-N) 80%, black)`, because the tile carries
+  a white monogram and three of the eight swatches fail AA under white at full
+  strength — and *which* swatch a session lands on is the luck of a hash, so
+  it is not enough for most of them to pass. Measured with this repo's own
+  contrast gate:
+  ```
+  $ python3 scripts/design/contrast.py "#ffffff" "#e8710a"   # chart-2
+  Contrast #ffffff on #e8710a: 3.09:1
+    Normal text  AA  (4.5:1): FAIL
+  $ python3 scripts/design/contrast.py "#ffffff" "#0e9f6e"   # chart-3
+  Contrast #ffffff on #0e9f6e: 3.39:1
+    Normal text  AA  (4.5:1): FAIL
+  $ python3 scripts/design/contrast.py "#ffffff" "#0891b2"   # chart-6
+  Contrast #ffffff on #0891b2: 3.68:1
+    Normal text  AA  (4.5:1): FAIL
+  ```
+  At 80% every swatch clears AA, the tightest by 0.11 (all eight measured with
+  the same script, white on the mixed value): chart-1 7.24, chart-2 4.61,
+  chart-3 5.01, chart-4 6.84, chart-5 7.88, chart-6 5.39, chart-7 7.07,
+  chart-8 6.70. A gradient interpolated in sRGB never produces a pixel lighter
+  than its lighter stop, so clearing both stops clears the whole tile — no
+  mid-gradient sample can slip under. **Exit condition:** none, unless the
+  master's chart palette is retuned for text-bearing grounds, which would make
+  the mix unnecessary rather than merely conservative.
+
+- **2026-07-31 — Real gate counts. Rewritten 2026-08-03 after the
+  restructure.** The counts this entry used to carry (93 hardcode / 16
+  no-emoji) were attributed largely to `SessionDetailDrawer.vue`,
+  `TranscriptTurnList.vue`, `SessionCard.vue` and `App.vue`, deferred to "the
+  Main+Rail restructure". That restructure is this PR. Two of those files no
+  longer exist and the other two were rewritten, so those numbers are gone
+  rather than reduced. Measured now:
+  - **No-emoji lint: passes.**
+    ```
+    $ python3 scripts/design/check_no_emoji.py web/src CLAUDE.md docs/DESIGN.md
+    Scanned 100 file(s).
+    OK: no emoji in UI output or taste files.
+    ```
+    From a 17-finding baseline. The `identicon.ts` glyph set that contributed 4
+    of them is gone: avatars are monogram-on-gradient now, no pictographs.
+  - **Hardcode lint: 9 findings, every one inside a vendored file.**
+    ```
+    $ python3 scripts/design/lint_hardcodes.py web/src
+    web/src/components/ui/tooltip/TooltipContent.vue:47: hardcoded px '2px' — use a token
+    web/src/styles/hds-tokens.css:4: hardcoded hex '#2563eb' — use a token
+    web/src/styles/hds-tokens.css:4: hardcoded hex '#3b82f6' — use a token
+    web/src/styles/hds-tokens.css:92: hardcoded hex '#2563eb' — use a token
+    web/src/styles/hds-tokens.css:227: hardcoded px '2px' — use a token
+    web/src/styles/hds-tokens.css:227: hardcoded px '4px' — use a token
+    web/src/styles/hds-tokens.css:227: hardcoded px '2px' — use a token
+    web/src/styles/hds-tokens.css:517: hardcoded px '2px' — use a token
+    web/src/styles/hds-tokens.css:521: hardcoded px '2px' — use a token
+
+    Scanned 74 file(s). Skipped 24 test file(s) — pass --include-tests to lint them.
+    FAIL: 9 hardcoded value(s). Map each to a token, or add a 'ds-allow-hardcode' comment for a justified exception.
+    ```
+    **Zero are in app code.** Eight are in `hds-tokens.css`, the byte-identical
+    vendor copy, which this repo must never edit locally (see "Declarations");
+    the ninth is `rounded-[2px]` on shadcn-vue's stock tooltip arrow. The
+    standing decision is not to locally patch a copy-in file to satisfy a lint:
+    a local edit is silently reverted by the next re-copy from master, which is
+    strictly worse than a disclosed finding.
+
+    Six of the eight `hds-tokens.css` findings are the linter misreading its
+    own input, and the three distinct blind spots are worth naming because each
+    is an upstream bug, not a token defect:
+    - **Hexes inside CSS comments are flagged.** Lines 4 and 92 are prose
+      explaining the dark-mode contrast rule; they mention `#3b82f6` and
+      `#2563eb` as *subjects*, and no rule sets a colour there.
+    - **`px` on the continuation line of a multi-line declaration is flagged.**
+      Line 227 is the middle of `--ds-shadow-overlay`. The token context test
+      only looks at the current line, so a declaration wrapped across lines
+      loses its `--ds-*` anchor after the first.
+    - **A hardcoded fallback inside `var(--token, <value>)` is *not* flagged** —
+      the inverse failure, and the one that let the border-color shim sit
+      unflagged for days (see that entry above).
+
+    That leaves lines 517 and 521 as genuine raw `px` in the vendored base layer
+    (`text-underline-offset: 2px`, `text-decoration-thickness: 2px`), which are
+    still upstream's to fix, not this repo's.
+  **Exit condition:** the app-code half is closed. What remains needs an
+  upstream fix to `lint_hardcodes.py` (three blind spots) and to
+  `hds-tokens.css` (two raw `px`); both are on the list to raise with the
+  master. Adherence lint is a separate, permanent gap for this repo — see the
+  "Gates wired" section above, not repeated here.
