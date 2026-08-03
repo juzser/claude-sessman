@@ -9,8 +9,22 @@ import {
   type SubagentRecord,
   type SubagentUsage,
 } from "./subagent-index.js";
+import { getOrSummarizeTurn, type SummaryCache } from "./summary-cache.js";
+import { NullSummarizer, type Summarizer, type TurnSummary } from "./summarizer.js";
 
 const DEFAULT_TTL_MS = 1000;
+/** How many of the most-recently-seen turns ever carry an attached summary — never backfilled onto older turns. */
+const RECENT_SUMMARY_COUNT = 3;
+
+/** In-memory no-op cache used when a TranscriptIndexCache is built without an explicit summary cache (e.g. every existing test call site, and any `SESSMAN_SUMMARIZER=null` deployment) — never touches disk. */
+const NOOP_SUMMARY_CACHE: SummaryCache = {
+  async getTurn() {
+    return null;
+  },
+  async setTurn() {
+    // Nothing to persist; NullSummarizer never produces a non-null result to cache anyway.
+  },
+};
 const SUMMARY_TEXT_LIMIT = 400;
 const DETAIL_TEXT_LIMIT = 2000;
 /** Upper bound on how much of any single captured prompt/gist we ever retain in memory. */
@@ -159,6 +173,14 @@ export interface TranscriptTurn {
   filesTouched: string[];
   /** True when this turn's prompt is the post-compaction continuation preamble. */
   continuation: boolean;
+  /**
+   * LLM-condensed {prompt, response} pair, present only for the
+   * RECENT_SUMMARY_COUNT most-recently-seen turns — never backfilled onto
+   * older turns even if they were summarized in the past (see
+   * `isWithinSummaryWindow` below). Null while unsummarized (no assistant
+   * reply yet, summarizer disabled, or a transient summarizer failure).
+   */
+  summary: TurnSummary | null;
 }
 
 export interface TranscriptSummary {
@@ -212,6 +234,8 @@ interface MutableTurn {
   /** Insertion-ordered set of file-tool targets seen so far in this turn (Set preserves insertion order). */
   fileTargets: Set<string>;
   continuation: boolean;
+  /** Populated by a background refresh once this turn falls within the most-recent-summary window; see refreshRecentTurnSummaries. */
+  summary: TurnSummary | null;
 }
 
 /**
@@ -599,6 +623,7 @@ function applyEntry(state: IndexState, entry: Record<string, unknown>): void {
       toolCallsOmitted: 0,
       fileTargets: new Set(),
       continuation: isContinuationPrompt(promptText),
+      summary: null,
     });
     return;
   }
@@ -662,7 +687,47 @@ function applyLine(state: IndexState, rawLine: string): void {
   applyEntry(state, parsed);
 }
 
-async function refreshOne(prior: IndexState | null, transcriptPath: string, sessionId: string): Promise<IndexState | null> {
+/**
+ * Fills in `summary` for whichever of the RECENT_SUMMARY_COUNT most-recent
+ * turns don't have one cached yet. Runs as part of the background refresh
+ * (see TranscriptIndexCache's non-blocking read/refresh contract above) so it
+ * never delays a caller reading the last-known state; a summarizer failure
+ * (down, unreachable, unparseable reply) leaves `summary` null rather than
+ * throwing, so the next tick just retries. A turn whose assistant hasn't
+ * replied yet (`gist === null`) is skipped entirely — never summarized with
+ * an empty response. All candidates run concurrently so one slow/unreachable
+ * call doesn't serialize behind the others.
+ */
+async function refreshRecentTurnSummaries(
+  state: IndexState,
+  sessionId: string,
+  summarizer: Pick<Summarizer, "summarizeTurn">,
+  summaryCache: SummaryCache,
+): Promise<void> {
+  const candidates = state.recentTurns
+    .slice(-RECENT_SUMMARY_COUNT)
+    .filter((turn) => turn.summary === null && turn.gist !== null);
+
+  await Promise.all(
+    candidates.map(async (turn) => {
+      // gist is narrowed non-null by the filter above, but TS can't see that across the closure.
+      const gist = turn.gist;
+      if (!gist) return;
+      turn.summary = await getOrSummarizeTurn(summaryCache, summarizer, sessionId, turn.index, {
+        prompt: turn.prompt.raw,
+        response: gist.raw,
+      });
+    }),
+  );
+}
+
+async function refreshOne(
+  prior: IndexState | null,
+  transcriptPath: string,
+  sessionId: string,
+  summarizer: Pick<Summarizer, "summarizeTurn">,
+  summaryCache: SummaryCache,
+): Promise<IndexState | null> {
   let stats;
   try {
     stats = await stat(transcriptPath);
@@ -693,10 +758,20 @@ async function refreshOne(prior: IndexState | null, transcriptPath: string, sess
   // subagent has run yet) just leaves state.subagentIndex empty.
   await refreshSubagentIndex(state.subagentIndex, transcriptPath, sessionId);
 
+  // Never blocks the caller of getSummary/getDetailSummary/getFlowSummary:
+  // this whole function only ever runs inside a background refresh (see
+  // TranscriptIndexCache.startRefresh), which those reads never await.
+  await refreshRecentTurnSummaries(state, sessionId, summarizer, summaryCache);
+
   return state;
 }
 
-function turnToSummary(turn: MutableTurn, limit: number): TranscriptTurn {
+/** The last RECENT_SUMMARY_COUNT turn indices in `recentTurns` (oldest-to-newest ring buffer) — the only turns ever allowed to expose a summary, computed fresh on every read so a turn that ages out of the window stops exposing whatever summary it picked up while it was recent. */
+function summaryWindowIndices(recentTurns: MutableTurn[]): Set<number> {
+  return new Set(recentTurns.slice(-RECENT_SUMMARY_COUNT).map((turn) => turn.index));
+}
+
+function turnToSummary(turn: MutableTurn, limit: number, summaryWindow: Set<number>): TranscriptTurn {
   return {
     index: turn.index,
     at: turn.at,
@@ -707,6 +782,7 @@ function turnToSummary(turn: MutableTurn, limit: number): TranscriptTurn {
     toolCallsOmitted: turn.toolCallsOmitted,
     filesTouched: [...turn.fileTargets],
     continuation: turn.continuation,
+    summary: summaryWindow.has(turn.index) ? turn.summary : null,
   };
 }
 
@@ -746,6 +822,7 @@ function toSummary(state: IndexState, textLimit: number): TranscriptSummary {
   // a fresh file-derived sum onto an already-combined running total.
   const subagentRecords = toSubagentRecords(state.subagentIndex);
   const fileUsage = sumSubagentUsage(subagentRecords);
+  const summaryWindow = summaryWindowIndices(state.recentTurns);
 
   return {
     turnCount: state.turnCount,
@@ -761,7 +838,9 @@ function toSummary(state: IndexState, textLimit: number): TranscriptSummary {
     // /detail and the default summary only ever expose the last MAX_RECENT_TURNS,
     // even though the underlying ring buffer (state.recentTurns) now holds up to
     // MAX_FLOW_TURNS for the flow view — see toFlowSummary below.
-    recentTurns: state.recentTurns.slice(-MAX_RECENT_TURNS).map((turn) => turnToSummary(turn, SUMMARY_TEXT_LIMIT)),
+    recentTurns: state.recentTurns
+      .slice(-MAX_RECENT_TURNS)
+      .map((turn) => turnToSummary(turn, SUMMARY_TEXT_LIMIT, summaryWindow)),
     // Sibling-file usage (real subagent transcripts) and the inline-sidechain
     // accumulator are sourced from disjoint bytes on disk — the main
     // transcript file for the latter, `subagents/*.jsonl` for the former —
@@ -780,11 +859,12 @@ function toSummary(state: IndexState, textLimit: number): TranscriptSummary {
 
 /** Flow-view payload: every retained turn (up to MAX_FLOW_TURNS), oldest first. */
 function toFlowSummary(state: IndexState): FlowSummary {
+  const summaryWindow = summaryWindowIndices(state.recentTurns);
   return {
     turnCount: state.turnCount,
     retainedTurnCount: state.recentTurns.length,
     turnsDropped: state.turnCount > state.recentTurns.length,
-    turns: state.recentTurns.map((turn) => turnToSummary(turn, SUMMARY_TEXT_LIMIT)),
+    turns: state.recentTurns.map((turn) => turnToSummary(turn, SUMMARY_TEXT_LIMIT, summaryWindow)),
   };
 }
 
@@ -801,7 +881,11 @@ function toFlowSummary(state: IndexState): FlowSummary {
 export class TranscriptIndexCache {
   private readonly cache = new Map<string, CacheEntry>();
 
-  constructor(private readonly ttlMs: number = DEFAULT_TTL_MS) {}
+  constructor(
+    private readonly ttlMs: number = DEFAULT_TTL_MS,
+    private readonly summarizer: Pick<Summarizer, "summarizeTurn"> = new NullSummarizer(),
+    private readonly summaryCache: SummaryCache = NOOP_SUMMARY_CACHE,
+  ) {}
 
   getSummary(sessionId: string, transcriptPath: string): TranscriptSummary | null {
     return this.read(sessionId, transcriptPath, SUMMARY_TEXT_LIMIT);
@@ -851,7 +935,7 @@ export class TranscriptIndexCache {
   private startRefresh(sessionId: string, transcriptPath: string): Promise<void> {
     const prior = this.cache.get(sessionId) ?? null;
 
-    const pending = refreshOne(prior?.state ?? null, transcriptPath, sessionId)
+    const pending = refreshOne(prior?.state ?? null, transcriptPath, sessionId, this.summarizer, this.summaryCache)
       .then((nextState) => {
         this.cache.set(sessionId, { state: nextState, fetchedAt: Date.now(), pending: null });
       })

@@ -47,6 +47,10 @@ every read goes through `registry.ts`/`transcript.ts`/`transcript-index.ts`.
 | `git-info.ts` | per-cwd branch/dirty, cached | never blocks the caller (see below) |
 | `transcript.ts` | stat a transcript file | never reads its contents |
 | `transcript-index.ts` | incremental JSONL scan → summary | never re-reads consumed bytes (see below) |
+| `summarizer.ts` | summarization backend contract + `NullSummarizer` | every implementation must resolve `null` on failure, never throw |
+| `ollama-client.ts` | HTTP client for Ollama's `/api/generate` | only ever calls the configured loopback URL (`127.0.0.1:11434` by default); never throws |
+| `ollama-lifecycle.ts` | probe/spawn/stop the `ollama serve` process | only kills a child it spawned itself, never an operator-started instance |
+| `summary-cache.ts` | on-disk per-turn summary cache | keyed by `(sessionId, turnIndex)`; a `null` result is never persisted |
 | `slug.ts` | cwd → transcript path | pure, no I/O |
 | `enrich.ts` | fold the above into `EnrichedSession` | runs process-info + transcript stat concurrently (`Promise.all`) |
 | `sessions-service.ts` | the one shared read path | same function backs REST and WS, so they can't disagree |
@@ -119,6 +123,81 @@ against files that can reach tens of MB:
 - At most one scan is in flight per session (`pending`), so a watcher tick
   and a concurrent `/detail` request against the same session dedupe into
   one scan.
+
+## Turn summarizer
+
+`summarizer.ts` defines the `Summarizer` contract (`summarizeTurn`,
+`summarizeSession`, `close`) and the always-safe `NullSummarizer` fallback
+every implementation must degrade to on any failure — never throw.
+`ollama-client.ts`'s `OllamaSummarizer` is the real backend: a thin HTTP
+client over Ollama's `POST /api/generate` that likewise always resolves
+`null` instead of throwing (network failure, non-2xx, timeout, or an
+unparseable reply). **It is opt-in.** A default install runs
+`NullSummarizer`, shows the real prompt/response text, and never spawns an
+Ollama server, because keeping one resident costs memory and CPU for the
+entire time sessman is up and the plain-text fallback is good enough to not
+charge every operator for that by default. **`http://127.0.0.1:11434` (loopback-only) is the sole
+network destination this codebase is ever allowed to call** — no other
+host, and this tool never binds or calls out to anything but loopback.
+
+Four env vars, read once by `config.ts`'s `loadConfig` (see its doc comment
+there for exact defaults), select and configure the summarizer:
+
+| Env var | Purpose |
+|---|---|
+| `SESSMAN_SUMMARIZER` | `"ollama"` opts in to summarization; anything else, including unset (the default), gets `NullSummarizer` with zero Ollama calls and no process spawned |
+| `SESSMAN_OLLAMA_MODEL` | model name passed to Ollama's `/api/generate` (default `qwen2.5:3b`) |
+| `SESSMAN_OLLAMA_URL` | Ollama base URL (default `http://127.0.0.1:11434`) |
+| `SESSMAN_CACHE_DIR` | on-disk summary cache root, deliberately outside `~/.claude` (default `~/.cache/claude-sessman`) |
+
+`ollama-lifecycle.ts`'s `startOllamaLifecycle` runs once at server startup
+(`server.ts`'s `startServer`), and only when `SESSMAN_SUMMARIZER=ollama`
+selected the Ollama path — on the default `"null"` config it is never called
+at all, so no probe and no spawn ever happen. When it does run it is
+fire-and-forget — never awaited *during startup*, so a slow or missing Ollama can never delay the HTTP/WS server
+coming up. The promise it returns is retained and awaited inside `close()`,
+which is what stops a shutdown racing the spawn from orphaning a
+self-spawned `ollama serve`; do not "simplify" that back into reading a
+variable a `.then()` assigns. It probes
+`/api/tags`, and only spawns `ollama serve` itself if that probe fails. The
+one hard rule governing it: **it only ever kills the child it spawned
+itself.** `stop()` is a no-op if this process merely found an Ollama the
+operator already had running, or if the `ollama` binary was missing
+entirely (in which case it also logs once; every subsequent
+`OllamaSummarizer` call against the still-unreachable server just resolves
+`null`, so the net effect matches running with `NullSummarizer`).
+
+`summary-cache.ts`'s `createSummaryCache(cacheDir)` persists successful
+summaries as one JSON file per session at
+`<cacheDir>/summaries/<sessionId>.json`, keyed by `turnIndex` — i.e. the
+on-disk cache key is the pair **`(sessionId, turnIndex)`**, mirroring the
+in-memory `MutableTurn.summary` it backs. A `null` result is never written,
+so a transient failure is retried on the next refresh tick rather than
+sticking forever; concurrent writes to the same session are serialized
+through a per-session write-lock queue so two overlapping `summarizeTurn`
+calls can't clobber each other's entries. Each session's file is pruned on
+every write to the `MAX_CACHED_TURNS_PER_SESSION` (20) entries with the
+highest `turnIndex`, so a long-running session's cache can't grow
+unbounded — the margin above the 3-turn read window below is deliberate,
+tolerating turns being summarized out of strict order without evicting one
+a read still wants.
+
+**Only the 3 most recent turns of a session ever carry a summary, and it is
+never backfilled onto older turns.** This is enforced at *read* time, not
+write time: `transcript-index.ts`'s `summaryWindowIndices()` recomputes the
+current last-3-turn-index window fresh on every `toSummary`/`toFlowSummary`
+call, so a turn that ages out of the window immediately stops exposing
+whatever summary it collected earlier — it can never present a stale value
+just because it used to be recent. Summarization itself happens inside the
+same background refresh that already backs the stale-while-revalidate cache
+above (`refreshOne` → `refreshRecentTurnSummaries`), so it inherits that
+mechanism's non-blocking guarantee for free: a caller of
+`getSummary`/`getDetailSummary`/`getFlowSummary` always gets the last-known
+state synchronously and never waits on a summarizer call. A turn is only
+ever submitted for summarization once its assistant has actually replied
+(internal `gist !== null`); an in-progress turn with no reply yet is skipped
+until it does. Up to 3 eligible turns per refresh tick are summarized
+concurrently (`Promise.all`), not sequentially.
 
 ## Watcher, poll, and liveness model
 
@@ -204,10 +283,12 @@ each time. There is no separate liveness timer.
   general-purpose auth; this is a single-user local tool by design.
 - No terminal embedding or message-sending into a session — that's the
   Phase 2 tmux-relay scope (`docs/ROADMAP.md`), not implemented here.
-- The flow graph's per-node content is deterministic only — it's built
-  straight from `FlowSummary`/`TranscriptTurn` fields, with no LLM
-  summarization step. Cheap-LLM node summaries are the post-M3 TODO tracked
-  in `docs/ROADMAP.md`, not implemented here.
+- Server-side, the last 3 recent turns now carry a real cheap-LLM
+  `summary` field (see "Turn summarizer" above), but
+  `web/src/lib/flow-model.ts` does not read that field: the flow graph's
+  rendered per-node content is still built straight from the deterministic
+  `FlowSummary`/`TranscriptTurn` fields it already used before this field
+  existed.
 - "Focus tab" only supports `Terminal.app`; other terminal emulators
   return a focus-failed error rather than switching tabs (by design, not
   a bug to fix here).
