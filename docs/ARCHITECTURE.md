@@ -147,8 +147,12 @@ there for exact defaults), select and configure the summarizer:
 | `SESSMAN_CACHE_DIR` | on-disk summary cache root, deliberately outside `~/.claude` (default `~/.cache/claude-sessman`) |
 
 `ollama-lifecycle.ts`'s `startOllamaLifecycle` runs once at server startup
-(`server.ts`'s `startServer`) fire-and-forget — never awaited, so a slow or
-missing Ollama can never delay the HTTP/WS server coming up. It probes
+(`server.ts`'s `startServer`) fire-and-forget — never awaited *during
+startup*, so a slow or missing Ollama can never delay the HTTP/WS server
+coming up. The promise it returns is retained and awaited inside `close()`,
+which is what stops a shutdown racing the spawn from orphaning a
+self-spawned `ollama serve`; do not "simplify" that back into reading a
+variable a `.then()` assigns. It probes
 `/api/tags`, and only spawns `ollama serve` itself if that probe fails. The
 one hard rule governing it: **it only ever kills the child it spawned
 itself.** `stop()` is a no-op if this process merely found an Ollama the
