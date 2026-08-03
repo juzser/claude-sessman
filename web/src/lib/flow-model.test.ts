@@ -13,6 +13,7 @@ function makeTurn(index: number, overrides: Partial<TranscriptTurn> = {}): Trans
     toolCalls: [],
     toolCallsOmitted: 0,
     filesTouched: [],
+    continuation: false,
     summary: null,
     ...overrides,
   };

@@ -47,6 +47,56 @@ export interface SessionSummary {
   description: string;
 }
 
+/** Mirrors server/src/transcript-index.ts SummedUsage. */
+export interface SummedUsage {
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheCreationTokens: number;
+}
+
+/** Mirrors server/src/transcript-index.ts ModelUsage. Every entry sums to totalUsage. */
+export interface ModelUsage {
+  model: string;
+  calls: number;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheCreationTokens: number;
+}
+
+/** Mirrors server/src/transcript-index.ts RunningSubagent — a dispatch with no tool_result yet. */
+export interface RunningSubagent {
+  toolUseId: string;
+  description: string | null;
+  subagentType: string | null;
+  startedAt: string | null;
+}
+
+/** Mirrors server/src/transcript-index.ts SubagentAgentSummary. */
+export interface SubagentAgentSummary {
+  agentId: string;
+  agentType: string | null;
+  description: string | null;
+  spawnDepth: number | null;
+  /** The dispatching tool_use id, or null when the sidecar meta is missing or malformed. */
+  toolUseId: string | null;
+  /** Null until at least one usage snapshot is seen in this subagent's own transcript. */
+  usage: SummedUsage | null;
+  running: boolean;
+}
+
+/** Mirrors server/src/transcript-index.ts SubagentSummary. */
+export interface SubagentSummary {
+  /** Frequently 0 even while subagents ran — this CLI stores them as sidecar files, not inline sidechain lines. */
+  sidechainLineCount: number;
+  lastSidechainAt: string | null;
+  /** Best-effort "currently running" heuristic; see docs/DATA-CONTRACT.md for its failure mode. */
+  running: RunningSubagent[];
+  /** Every subagent found in the sidecar directory, finished or not. Empty when the directory was never written. */
+  agents: SubagentAgentSummary[];
+}
+
 /** Mirrors server/src/transcript-index.ts TranscriptTurn. */
 export interface TranscriptTurn {
   /** Position of this turn across the whole transcript (not reset by the ring buffer). */
@@ -60,6 +110,8 @@ export interface TranscriptTurn {
   toolCallsOmitted: number;
   /** Deduped, insertion-ordered list of file-tool targets touched in this turn. */
   filesTouched: string[];
+  /** True when this turn's prompt is the post-compaction continuation preamble. Flagged, never dropped, so index stays monotonic. */
+  continuation: boolean;
   /** Populated only for the RECENT_SUMMARY_COUNT most-recently-seen turns; see server's summarizer docs. */
   summary: TurnSummary | null;
 }
@@ -77,6 +129,13 @@ export interface TranscriptSummary {
   scannedBytes: number;
   complete: boolean;
   recentTurns: TranscriptTurn[];
+  /** Main chain + sidechain. Null until at least one assistant usage is seen. */
+  totalUsage: SummedUsage | null;
+  /** Sidechain only. Null until at least one sidechain assistant usage is seen. */
+  subagentUsage: SummedUsage | null;
+  /** Sorted by calls desc, then model name asc. Always sums to totalUsage. */
+  modelBreakdown: ModelUsage[];
+  subagents: SubagentSummary;
   /** Null unless a summarizer is opted in and has succeeded at least once; see server's transcript-index docs. */
   sessionSummary: SessionSummary | null;
 }
