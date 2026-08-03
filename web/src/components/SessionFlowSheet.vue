@@ -97,6 +97,7 @@ function onOpenChange(open: boolean): void {
 
       <div class="min-h-0 flex-1 overflow-y-auto p-4">
         <SessionFlowView
+          :key="session?.sessionId"
           :state="flowState"
           :flow="flow"
           :error-message="flowErrorMessage"

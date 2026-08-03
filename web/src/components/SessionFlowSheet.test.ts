@@ -177,4 +177,47 @@ describe("SessionFlowSheet", () => {
     expect(flowMock).toHaveBeenLastCalledWith("session-b");
     expect(flowMock).toHaveBeenCalledTimes(2);
   });
+
+  /**
+   * Waits out the flow fetch's promise resolution plus the extra render pass
+   * Vue Flow needs to build its node elements (mirrors SessionFlowView's own
+   * `mountGraph` helper). Used here, rather than the `SessionFlowView: true`
+   * stub the other tests in this file use, because this test exercises the
+   * real node and its expand/collapse state.
+   */
+  async function waitForFlowGraph(): Promise<void> {
+    await nextTick();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await nextTick();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await nextTick();
+  }
+
+  it("collapses an expanded turn back down when the sheet switches to a different session", async () => {
+    // Regression test for a state leak: SessionFlowView keyed its expanded-turn
+    // set only by turn index, and SessionFlowSheet rendered it with no `:key`,
+    // so switching sessions while the sheet stayed mounted could carry an
+    // expanded turn from session A over onto session B's identically-indexed
+    // turn. Not reachable today (the sheet unmounts the view on close), but a
+    // one-line `:key` closes it before a future non-modal sheet or session
+    // switcher makes it live.
+    flowMock.mockResolvedValueOnce({ ok: true, session: makeSession("session-a"), transcriptFlow: makeFlow() });
+    wrapper = mount(SessionFlowSheet, {
+      props: { session: makeSession("session-a"), focusTurnIndex: null, home: "/home/synthetic" },
+      attachTo: document.body,
+    });
+    await waitForFlowGraph();
+
+    const node = document.body.querySelector('[data-slot="flow-node"]') as HTMLElement | null;
+    expect(node).not.toBeNull();
+    node?.click();
+    await nextTick();
+    expect(document.body.querySelector('[data-slot="turn-prompt"]')).not.toBeNull();
+
+    flowMock.mockResolvedValueOnce({ ok: true, session: makeSession("session-b"), transcriptFlow: makeFlow() });
+    await wrapper.setProps({ session: makeSession("session-b") });
+    await waitForFlowGraph();
+
+    expect(document.body.querySelector('[data-slot="turn-prompt"]')).toBeNull();
+  });
 });

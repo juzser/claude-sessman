@@ -114,6 +114,30 @@ describe("SessionFlowView", () => {
     expect(wrapper.text()).not.toContain("tail-marker");
   });
 
+  it("shows the LLM reply summary, not the raw gist, in the collapsed preview", async () => {
+    const turn = makeTurn(0, {
+      summary: { response: "summarized reply" },
+      gist: { text: "raw gist", truncated: false },
+    });
+    const wrapper = await mountGraph({ flow: makeFlow([turn]) });
+
+    expect(wrapper.text()).toContain("summarized reply");
+    expect(wrapper.text()).not.toContain("raw gist");
+  });
+
+  it("shows the LLM reply summary, not the raw gist, in the expanded block", async () => {
+    const turn = makeTurn(0, {
+      summary: { response: "summarized reply" },
+      gist: { text: "raw gist", truncated: false },
+    });
+    const wrapper = await mountGraph({ flow: makeFlow([turn]) });
+
+    await clickFirstNode(wrapper);
+    const reply = wrapper.get('[data-slot="turn-reply"]');
+    expect(reply.text()).toContain("summarized reply");
+    expect(reply.text()).not.toContain("raw gist");
+  });
+
   it("warns that older turns are missing when the server dropped some", () => {
     const flow = { ...makeFlow([makeTurn(0)]), turnCount: 900, retainedTurnCount: 1, turnsDropped: true };
     const wrapper = mountView({ flow });

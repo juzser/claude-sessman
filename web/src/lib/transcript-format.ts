@@ -1,3 +1,5 @@
+import type { TranscriptTurn } from "./types";
+
 /**
  * Collapses whitespace/newlines into single spaces and truncates for a
  * single-line display (card prompt line, drawer turn list). Server-side
@@ -42,4 +44,19 @@ export function formatTurnTime(at: string | null): string {
   if (at === null) return "—";
   const match = at.match(/T(\d{2}:\d{2}:\d{2})/);
   return match ? match[1] : at;
+}
+
+/**
+ * The reply slot takes the LLM summary when one exists and the raw captured
+ * gist otherwise. Same slot, same classes either way, so a summarized reply
+ * must not be visually distinguishable from a raw one. The operator's own
+ * prompt follows the opposite rule and is never routed through this
+ * function: it is always rendered as real captured text, verbatim.
+ *
+ * Every call site that renders a turn's reply (TurnStrip, SessionFlowView)
+ * must go through this one function rather than reading `gist.text`
+ * directly, so the two cannot drift on which source wins.
+ */
+export function replyText(turn: Pick<TranscriptTurn, "summary" | "gist">): string {
+  return turn.summary?.response ?? turn.gist.text;
 }

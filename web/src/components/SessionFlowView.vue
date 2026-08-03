@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Lozenge } from "@/components/ui/lozenge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { buildFlowGraph } from "../lib/flow-model";
-import { formatTurnTime, truncateLine } from "../lib/transcript-format";
+import { formatTurnTime, replyText, truncateLine } from "../lib/transcript-format";
 import type { FlowSummary, TranscriptTurn } from "../lib/types";
 
 const props = defineProps<{
@@ -148,8 +148,8 @@ function retry(): void {
                 <span class="text-fg-subtlest">prompt:</span>
                 {{ truncateLine(data.turn.prompt.text || "(no text)", PROMPT_LINE_LENGTH) }}
               </p>
-              <p v-if="data.turn.gist.text" class="mt-1 text-fg-subtle" :title="data.turn.gist.text">
-                <span class="text-fg-subtlest">reply:</span> {{ truncateLine(data.turn.gist.text, PROMPT_LINE_LENGTH) }}
+              <p v-if="replyText(data.turn)" class="mt-1 text-fg-subtle" :title="replyText(data.turn)">
+                <span class="text-fg-subtlest">reply:</span> {{ truncateLine(replyText(data.turn), PROMPT_LINE_LENGTH) }}
               </p>
             </template>
 
@@ -164,11 +164,11 @@ function retry(): void {
                 {{ data.turn.prompt.text || "(no text)" }}
               </p>
               <p
-                v-if="data.turn.gist.text"
+                v-if="replyText(data.turn)"
                 data-slot="turn-reply"
                 class="mt-1.5 wrap-anywhere whitespace-pre-wrap text-fg-subtle"
               >
-                <span class="text-fg-subtlest">reply:</span> {{ data.turn.gist.text }}
+                <span class="text-fg-subtlest">reply:</span> {{ replyText(data.turn) }}
               </p>
 
               <ul v-if="data.turn.toolCalls.length > 0" class="mt-1.5 flex flex-col gap-1">

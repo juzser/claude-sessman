@@ -3,6 +3,7 @@ import { ChevronRight, Maximize2 } from "@lucide/vue";
 import { Button } from "@/components/ui/button";
 import { Icon } from "@/components/ui/icon";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
+import { replyText } from "../lib/transcript-format";
 import type { TranscriptTurn } from "../lib/types";
 
 defineProps<{
@@ -14,15 +15,6 @@ defineProps<{
 // the parent opens the flow Sheet centred on that turn, and the retained
 // window can start at any index once older turns are evicted.
 const emit = defineEmits<{ expand: [turnIndex: number] }>();
-
-/**
- * The reply slot takes the LLM summary when one exists and the raw captured
- * gist otherwise. Same slot, same classes either way, so a summarized turn must
- * not be visually distinguishable from a raw one.
- */
-function replyText(turn: TranscriptTurn): string {
-  return turn.summary?.response ?? turn.gist.text;
-}
 </script>
 
 <template>

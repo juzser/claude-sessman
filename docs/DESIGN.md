@@ -565,3 +565,16 @@ Beyond what's already documented in the repo's own `CLAUDE.md`
   `hds-tokens.css` (two raw `px`); both are on the list to raise with the
   master. Adherence lint is a separate, permanent gap for this repo — see the
   "Gates wired" section above, not repeated here.
+
+- **2026-08-03 — Expanded flow node uses one shared divider, not per-block
+  boxes.** The spec's literal recipe for a bordered sub-block is `rounded-lg
+  ring-1 ring-line bg-surface p-3`. `SessionFlowView.vue`'s expanded region
+  (`border-t border-line pt-2`, around the prompt/reply pair) does not apply
+  that recipe to the prompt and reply individually. The node itself is
+  already a bordered, shadowed box (`rounded-lg border border-line
+  bg-surface-raised ... shadow-lg`); nesting a second ring-and-background box
+  for the prompt and a third for the reply inside that outer box would be
+  box-in-box, not a clearer boundary. A plain top divider separates the two
+  without adding that nesting. **Exit condition:** none — this is a
+  deliberate simplification for this one shared container, not a drift to
+  reconcile.
