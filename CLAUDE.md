@@ -4,15 +4,16 @@ Guidance for AI agents (and humans) working in this repo.
 
 ## What this is
 
-`claude-sessman` — local web dashboard showing all currently-running Claude Code CLI sessions on this machine. Node 22 + TypeScript monorepo (npm workspaces): `server/` (Hono + `ws`, reads `~/.claude/sessions` and `~/.claude/projects/**/*.jsonl`, does the enrichment) and `web/` (Vue 3 + Vite + Tailwind card grid + detail drawer).
+`claude-sessman` — local web dashboard showing all currently-running Claude Code CLI sessions on this machine. Node 22 + TypeScript monorepo (npm workspaces): `server/` (Hono + `ws`, reads `~/.claude/sessions` and `~/.claude/projects/**/*.jsonl`, does the enrichment) and `web/` (Vue 3 + Vite + Tailwind two-column shell: a session card grid on the left, an aggregate rail on the right, with a shared flow Sheet for a session's turns).
 
-Reads local files only, binds to `127.0.0.1` only, sends nothing anywhere — see "Safety invariants" before touching anything security-relevant.
+Reads local files only, binds to `127.0.0.1` only, sends nothing off this machine — see "Safety invariants" before touching anything security-relevant.
 
 ## Sequencing
 
 - **M1** — session registry parsed/enriched, card grid.
 - **M2 (done)** — transcript tail/index, detail drawer, "focus tab" action.
 - **M3 (done)** — prompt-turn flow graph (Vue Flow) via `GET /api/sessions/:id/flow`, deterministic summaries only, no LLM calls yet.
+- **M4 (done)** — layout restructure (two-column shell, per-card turn strip, one shared flow Sheet; the M2 detail drawer and its turn list are gone), Hans Design System adoption, subagent visibility, and an optional local-Ollama summarizer that is **default off**.
 - **Phase 2** — tmux relay (`send-keys`/`capture-pane`, xterm.js).
 
 Full spec and decisions: `docs/ROADMAP.md`.
@@ -35,7 +36,7 @@ Full spec and decisions: `docs/ROADMAP.md`.
 - `composables/` — `useSessions.ts` (initial fetch + WS subscribe), `useAggregateUsage.ts` (folds the same session list into the rail's totals, never re-fetching)
 - `lib/` — pure logic + API client: `ws-client.ts`, `sessman-api.ts`, `types.ts` (duplicated from the server, see below), `status.ts`, `sort-filter.ts`, `time-ago.ts`, `path.ts`, `identicon.ts`, `transcript-format.ts`, `flow-model.ts` (pure `/flow` payload → Vue Flow nodes/edges mapping) — each with a colocated `*.test.ts`
 
-Docs: `docs/ARCHITECTURE.md`, `docs/API.md`, `docs/DEVELOPMENT.md`, `docs/DATA-CONTRACT.md`, `docs/ROADMAP.md`.
+Docs: `docs/ARCHITECTURE.md`, `docs/API.md`, `docs/DEVELOPMENT.md`, `docs/DATA-CONTRACT.md`, `docs/DESIGN.md`, `docs/ROADMAP.md`.
 
 ## Commands
 
@@ -86,7 +87,12 @@ Do not weaken any of these without discussing it first:
 
 - Server binds `127.0.0.1` only (`config.ts` default host, never `0.0.0.0`).
 - Read-only toward `~/.claude` — nothing in this codebase ever writes there.
-- No outbound network calls anywhere (only local `ps`/`git`/`osascript`).
+- Nothing is ever sent off this machine. Local `ps`/`git`/`osascript` aside,
+  the only network destination anywhere in this codebase is `127.0.0.1:11434`
+  (local Ollama, `ollama-client.ts` / `ollama-lifecycle.ts`), reached only when
+  the optional summarizer is explicitly enabled — `SESSMAN_SUMMARIZER` defaults
+  to `null`, i.e. no request is made at all. Never add a destination that is
+  not loopback.
 - All non-GET routes require the local-origin guard in `app.ts`: an `X-Sessman-Client` header plus an allow-listed (or absent) `Origin` — see `docs/API.md`.
 - "Focus tab" invokes `osascript` via `execFile` with the tty as its own argv element (never string-concatenated into the script); the tty is always server-resolved (never from the request body) and validated against `/^ttys\d+$/` before use.
 
@@ -96,10 +102,10 @@ Hard rules — violating any of these is a review blocker, not a style nit.
 Full detail (declarations, primitive inventory, lozenge mapping, reference
 pages, known deviations) lives in `docs/DESIGN.md`; this section is the
 enforcement surface an agent always has in context when touching `web/`.
-This adoption is infrastructure-only so far (tokens + gates land in this
-PR); no existing screen has been restyled yet, so several rules below
-describe the target state, not `web/`'s current contents — `docs/DESIGN.md`'s
-"Known deviations" tracks exactly where the gap is.
+The adoption is complete as of M4: every `.vue` under `web/src` uses token
+utilities, and the rules below describe what is actually in the tree, not a
+target state. Where the shipped UI departs from the design system on purpose,
+`docs/DESIGN.md`'s "Known deviations" says which departure and why.
 
 1. **Tokens only.** Colors, radii, shadows, control sizes and type roles come
    from `web/src/styles/hds-tokens.css` utilities (`bg-surface`,
@@ -111,7 +117,7 @@ describe the target state, not `web/`'s current contents — `docs/DESIGN.md`'s
    exists. Never edit token values in this repo — the master copy lives in
    the design system.
 2. **Closed component set.** Build only from the primitives inventoried in
-   `docs/DESIGN.md` (currently empty — nothing has been vendored yet).
+   `docs/DESIGN.md` — 14 of them are vendored under `web/src/components/ui/`.
    Missing something → vendor from shadcn-vue + add to the inventory in the
    same PR. Never hand-roll a lookalike, never add a UI dependency — icon
    pack, chart library, date picker, animation library — without the

@@ -234,7 +234,8 @@ each time. There is no separate liveness timer.
 - **`App.vue`** owns UI-local state: filter `query`, `sortMode`, `home`
   (fetched once from `/api/health`, used only to shorten displayed paths),
   a 1s `now` tick (drives relative-time labels like "updated 3s ago"), and
-  `selectedSessionId` (which session's detail drawer, if any, is open).
+  the pair `expandedSessionId` / `focusTurnIndex` (which session's flow Sheet
+  is open, if any, and which turn it opens centred on).
 - **`useSessions.ts`** owns the session list and WS connection lifecycle:
   one REST fetch (`GET /api/sessions`) on mount for the initial list, then
   `createSessionSocket` opens `/ws`. Every subsequent `{type:"sessions"}`
