@@ -1,20 +1,25 @@
 # claude-sessman
 
 A local web dashboard that shows all currently-running Claude Code CLI
-sessions on this machine — one card per session, live-updating, with a
-detail drawer for transcript/turn history and a "focus tab" action.
+sessions on this machine — one card per session, live-updating, each showing
+its most recent turns, plus a flow view of a session's turn history and a
+"focus tab" action.
 
-**Reads local files only. Binds to `127.0.0.1` only. Sends nothing anywhere.**
-Everything it knows comes from files already on disk under `~/.claude/` and
-from local `ps`/`git`/`osascript` calls against processes and repos you
-already have running; there is no outbound network call anywhere in this
-codebase.
+**Reads local files only. Binds to `127.0.0.1` only. Sends nothing off this
+machine.** Everything it knows comes from files already on disk under
+`~/.claude/` and from local `ps`/`git`/`osascript` calls against processes and
+repos you already have running. The single network destination anywhere in
+this codebase is `127.0.0.1:11434` — a local Ollama, used only by the optional
+turn summarizer, which is **off by default** (`SESSMAN_SUMMARIZER=null`).
+Nothing is ever sent to a remote host.
 
 ## Status
 
 - **M1** — session registry parsed/enriched, live card grid (done).
 - **M2** — transcript tail/index, detail drawer, "focus tab" action (done).
 - **M3** — prompt-turn flow graph, `GET /api/sessions/:id/flow` (done).
+- **M4** — two-column layout, per-card turn strip, shared flow Sheet, design
+  system, subagent visibility, optional local summarizer (done).
 - **Phase 2** — tmux relay (not started).
 
 Full spec and decisions: [`docs/ROADMAP.md`](docs/ROADMAP.md).
@@ -48,6 +53,7 @@ override, test-filtering, and troubleshooting.
 | [`docs/API.md`](docs/API.md) | HTTP + WebSocket routes, request/response shapes |
 | [`docs/DATA-CONTRACT.md`](docs/DATA-CONTRACT.md) | Registry + transcript JSONL field shapes, tolerances, the `procStart`/`ps lstart` timezone gotcha |
 | [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md) | Scripts, env overrides, test conventions, troubleshooting |
+| [`docs/DESIGN.md`](docs/DESIGN.md) | Design-system adoption: tokens, the vendored primitive inventory, gate scripts, known deviations |
 | [`docs/ROADMAP.md`](docs/ROADMAP.md) | Milestones, what's done vs. planned |
 
 ## Data at a glance
