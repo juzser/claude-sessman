@@ -57,6 +57,14 @@ route and the WS broadcast below, so both always agree.
 
 ## `GET /api/sessions/:sessionId/detail`
 
+**No web consumer today.** The route and its client helper
+(`sessman-api.ts`'s `fetchSessionDetail`) both still exist and are still
+tested, but the detail drawer that used to call it was replaced by the flow
+Sheet, which fetches `/flow` instead. Kept rather than deleted: the 2000-char
+prompt/gist it returns is the only way to get the untruncated text, and no
+route on this server is more than a lookup plus a cache read. Recorded here so
+the next reader doesn't hunt for a caller that isn't there.
+
 Looks the session up among **all** sessions (`includeDead: true` internally
 — a session that just died is still findable here so its detail can still
 be opened).
@@ -75,7 +83,8 @@ be opened).
 
 ## `GET /api/sessions/:sessionId/flow`
 
-Backs the drawer's Flow tab (`SessionDetailDrawer.vue` → `SessionFlowView.vue`).
+Backs the flow Sheet (`SessionFlowSheet.vue` → `SessionFlowView.vue`), opened
+from a turn in a card's `TurnStrip.vue`.
 Same lookup as `/detail`: looks the session up among **all** sessions
 (`includeDead: true` internally), so a session that just died is still
 findable here. Being a `GET`, it is **not** subject to the local-origin
@@ -241,3 +250,12 @@ carries `continuation: boolean` — `true` for a turn whose prompt is the
 auto-generated post-compaction preamble. These turns are flagged, not
 dropped, so `index` stays transcript-global and monotonic (see
 `docs/DATA-CONTRACT.md`).
+
+`transcriptSummary` also carries `sessionSummary: { description: string } |
+null` — one line describing what the session is currently about, built from
+recent prompts only. It is `null` on a default install (summarization is
+opt-in via `SESSMAN_SUMMARIZER=ollama`) and on any summarizer failure, so
+treat it as an enrichment that is usually absent. It rides on
+`TranscriptSummary`, so it reaches this endpoint and `/detail`, but there is
+no equivalent field on `FlowSummary`. Full semantics in
+`docs/DATA-CONTRACT.md`.

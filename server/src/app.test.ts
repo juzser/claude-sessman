@@ -1,9 +1,10 @@
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createApp } from "./app.js";
 import { GitInfoCache } from "./git-info.js";
+import type { Summarizer } from "./summarizer.js";
 import type { FocusResult, FocusRunner } from "./terminal-focus.js";
 import { TranscriptIndexCache } from "./transcript-index.js";
 
@@ -85,6 +86,76 @@ describe("createApp", () => {
       "alive-session",
       "dead-session",
     ]);
+  });
+
+  it("GET /api/sessions carries the session description on transcriptSummary", async () => {
+    // The card's description slot reads this off the plain session list, so
+    // the field has to survive the enrich passthrough — not just exist on the
+    // index's own summary type.
+    const sessionId = "summary-session";
+    const cwd = "/tmp/summary-cwd";
+    await writeFile(
+      path.join(sessionsDir, "summary.json"),
+      JSON.stringify({ pid: process.pid, sessionId, cwd, startedAt: Date.now(), status: "busy" }),
+    );
+
+    const slug = "-tmp-summary-cwd";
+    await mkdir(path.join(projectsDir, slug), { recursive: true });
+    const transcriptPath = path.join(projectsDir, slug, `${sessionId}.jsonl`);
+    await writeFile(
+      transcriptPath,
+      `${JSON.stringify({
+        type: "user",
+        timestamp: "2026-01-01T00:00:00.000Z",
+        message: { role: "user", content: "synthetic prompt" },
+      })}\n`,
+    );
+
+    const summarizer: Pick<Summarizer, "summarizeTurn" | "summarizeSession"> = {
+      summarizeTurn: async () => null,
+      summarizeSession: async () => ({ description: "synthetic description" }),
+    };
+    const cache = new TranscriptIndexCache(undefined, summarizer);
+    await cache.refreshAndWait(sessionId, transcriptPath);
+
+    const app = createApp({ sessionsDir, projectsDir }, new GitInfoCache(), cache);
+    const res = await app.request("/api/sessions");
+    const body = (await res.json()) as {
+      sessions: Array<{ transcriptSummary: { sessionSummary: { description: string } | null } | null }>;
+    };
+    expect(body.sessions[0]?.transcriptSummary?.sessionSummary).toEqual({
+      description: "synthetic description",
+    });
+  });
+
+  it("GET /api/sessions reports sessionSummary:null with the default summarizer", async () => {
+    const sessionId = "no-summary-session";
+    const cwd = "/tmp/no-summary-cwd";
+    await writeFile(
+      path.join(sessionsDir, "no-summary.json"),
+      JSON.stringify({ pid: process.pid, sessionId, cwd, startedAt: Date.now(), status: "busy" }),
+    );
+
+    const slug = "-tmp-no-summary-cwd";
+    await mkdir(path.join(projectsDir, slug), { recursive: true });
+    const transcriptPath = path.join(projectsDir, slug, `${sessionId}.jsonl`);
+    await writeFile(
+      transcriptPath,
+      `${JSON.stringify({
+        type: "user",
+        timestamp: "2026-01-01T00:00:00.000Z",
+        message: { role: "user", content: "synthetic prompt" },
+      })}\n`,
+    );
+
+    await transcriptIndexCache.refreshAndWait(sessionId, transcriptPath);
+
+    const app = createApp({ sessionsDir, projectsDir }, new GitInfoCache(), transcriptIndexCache);
+    const res = await app.request("/api/sessions");
+    const body = (await res.json()) as {
+      sessions: Array<{ transcriptSummary: { sessionSummary: unknown } | null }>;
+    };
+    expect(body.sessions[0]?.transcriptSummary?.sessionSummary).toBeNull();
   });
 
   it("GET /api/sessions/:sessionId/detail returns the enriched session plus transcript detail", async () => {

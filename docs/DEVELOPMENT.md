@@ -72,7 +72,16 @@ workspace's `test` script:
 ```sh
 cd server && npx vitest run transcript-index      # one file (by path fragment)
 cd server && npx vitest run -t "rotation"          # by test-name pattern
-cd web && npx vitest run SessionDetailDrawer
+cd web && npx vitest run SessionFlowView
+```
+
+Inside a **git worktree**, `npx vitest` can resolve a stale global npx cache
+copy instead of the workspace's own. npm workspaces hoist the binary to the
+repo root, so call it directly there:
+
+```sh
+cd web && ../node_modules/.bin/vitest run SessionFlowView
+cd web && ../node_modules/.bin/vue-tsc --noEmit -p tsconfig.json
 ```
 
 `server/vitest.config.ts` pins the test environment's `TZ` to `Asia/Bangkok`

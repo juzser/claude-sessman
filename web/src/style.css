@@ -4,19 +4,9 @@
 @custom-variant dark (&:is(.dark *));
 
 /*
-  The default border color has changed to `currentcolor` in Tailwind CSS v4,
-  so we've added these compatibility styles to make sure everything still
-  looks the same as it did with Tailwind CSS v3.
-
-  If we ever want to remove these styles, we need to add an explicit border
-  color utility to any element that depends on these defaults.
+  The Tailwind v3 border-color compat shim the upgrade codemod added here is
+  gone as of the layout restructure: every border-using element in this repo
+  now names its own token (`border-line`, `border-input`, `border-transparent`),
+  so nothing falls back to a default. Do not reintroduce it — a new bare
+  `border` utility should get a token, not a global gray.
 */
-@layer base {
-  *,
-  ::after,
-  ::before,
-  ::backdrop,
-  ::file-selector-button {
-    border-color: var(--color-gray-200, currentcolor);
-  }
-}

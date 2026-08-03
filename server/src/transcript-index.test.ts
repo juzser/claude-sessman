@@ -1321,7 +1321,10 @@ describe("TranscriptIndexCache turn summaries", () => {
     const summarizeTurn = vi.fn(async (_input: { prompt: string; response: string }) => ({
       response: "condensed",
     }));
-    const summarizer: Pick<Summarizer, "summarizeTurn"> = { summarizeTurn };
+    const summarizer: Pick<Summarizer, "summarizeTurn" | "summarizeSession"> = {
+      summarizeTurn,
+      summarizeSession: async () => null,
+    };
 
     const lines = [0, 1, 2, 3, 4].flatMap((i) => turnLines(i, i * 1000, true));
     await writeFile(transcriptPath, lines.map((l) => `${l}\n`).join(""));
@@ -1343,7 +1346,10 @@ describe("TranscriptIndexCache turn summaries", () => {
     const summarizeTurn = vi.fn(async (_input: { prompt: string; response: string }) => ({
       response: "condensed",
     }));
-    const summarizer: Pick<Summarizer, "summarizeTurn"> = { summarizeTurn };
+    const summarizer: Pick<Summarizer, "summarizeTurn" | "summarizeSession"> = {
+      summarizeTurn,
+      summarizeSession: async () => null,
+    };
 
     const lines = [0, 1, 2].flatMap((i) => turnLines(i, i * 1000, true));
     await writeFile(transcriptPath, lines.map((l) => `${l}\n`).join(""));
@@ -1361,7 +1367,10 @@ describe("TranscriptIndexCache turn summaries", () => {
 
   it("never calls the summarizer for a turn whose assistant hasn't replied yet", async () => {
     const summarizeTurn = vi.fn(async () => ({ response: "should never happen" }));
-    const summarizer: Pick<Summarizer, "summarizeTurn"> = { summarizeTurn };
+    const summarizer: Pick<Summarizer, "summarizeTurn" | "summarizeSession"> = {
+      summarizeTurn,
+      summarizeSession: async () => null,
+    };
 
     const lines = turnLines(0, 0, false); // prompt only, no assistant reply
     await writeFile(transcriptPath, lines.map((l) => `${l}\n`).join(""));
@@ -1379,7 +1388,10 @@ describe("TranscriptIndexCache turn summaries", () => {
     const summarizeTurn = vi.fn(async (_input: { prompt: string; response: string }) => ({
       response: "condensed",
     }));
-    const summarizer: Pick<Summarizer, "summarizeTurn"> = { summarizeTurn };
+    const summarizer: Pick<Summarizer, "summarizeTurn" | "summarizeSession"> = {
+      summarizeTurn,
+      summarizeSession: async () => null,
+    };
 
     const lines = [0, 1, 2, 3].flatMap((i) => turnLines(i, i * 1000, true));
     await writeFile(transcriptPath, lines.map((l) => `${l}\n`).join(""));
@@ -1404,5 +1416,156 @@ describe("TranscriptIndexCache turn summaries", () => {
     const summary = cache.getSummary(sessionId, transcriptPath);
 
     expect(summary?.recentTurns[0].summary).toBeNull();
+  });
+});
+
+describe("TranscriptIndexCache session summaries", () => {
+  let dir: string;
+  let transcriptPath: string;
+  let cacheDir: string;
+  const sessionId = "synthetic-session-summary-session";
+
+  beforeEach(async () => {
+    dir = await mkdtemp(path.join(tmpdir(), "sessman-session-summary-"));
+    transcriptPath = path.join(dir, `${sessionId}.jsonl`);
+    cacheDir = await mkdtemp(path.join(tmpdir(), "sessman-session-summary-cache-"));
+  });
+
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+    await rm(cacheDir, { recursive: true, force: true });
+  });
+
+  /** A turn: a user prompt line, optionally followed by an assistant reply line. */
+  function turnLines(index: number, atBase: number, withReply: boolean): string[] {
+    const promptAt = new Date(atBase).toISOString();
+    const lines = [userPromptLine(`session turn ${index} prompt`, promptAt)];
+    if (withReply) {
+      const replyAt = new Date(atBase + 1).toISOString();
+      lines.push(assistantLine(`session turn ${index} reply`, replyAt));
+    }
+    return lines;
+  }
+
+  it("populates sessionSummary once the summarizer resolves a description", async () => {
+    const summarizeSession = vi.fn(async (_input: { recentPrompts: string[] }) => ({
+      description: "hardening login flow",
+    }));
+    const summarizer: Pick<Summarizer, "summarizeTurn" | "summarizeSession"> = {
+      summarizeTurn: async () => null,
+      summarizeSession,
+    };
+
+    const lines = [0, 1].flatMap((i) => turnLines(i, i * 1000, true));
+    await writeFile(transcriptPath, lines.map((l) => `${l}\n`).join(""));
+
+    const cache = new TranscriptIndexCache(undefined, summarizer, createSummaryCache(cacheDir));
+    await cache.refreshAndWait(sessionId, transcriptPath);
+    const summary = cache.getSummary(sessionId, transcriptPath);
+
+    expect(summary?.sessionSummary).toEqual({ description: "hardening login flow" });
+    expect(summarizeSession).toHaveBeenCalledTimes(1);
+  });
+
+  it("leaves sessionSummary null and does not throw when the summarizer resolves null", async () => {
+    const summarizeSession = vi.fn(async (_input: { recentPrompts: string[] }) => null);
+    const summarizer: Pick<Summarizer, "summarizeTurn" | "summarizeSession"> = {
+      summarizeTurn: async () => null,
+      summarizeSession,
+    };
+
+    const lines = turnLines(0, 0, true);
+    await writeFile(transcriptPath, lines.map((l) => `${l}\n`).join(""));
+
+    const cache = new TranscriptIndexCache(undefined, summarizer, createSummaryCache(cacheDir));
+    // If refreshOne let a rejection escape, this await would throw and fail the test.
+    await cache.refreshAndWait(sessionId, transcriptPath);
+    const summary = cache.getSummary(sessionId, transcriptPath);
+
+    expect(summary?.sessionSummary).toBeNull();
+  });
+
+  it("defaults to a null sessionSummary when no summarizer is configured", async () => {
+    const lines = turnLines(0, 0, true);
+    await writeFile(transcriptPath, lines.map((l) => `${l}\n`).join(""));
+
+    const cache = new TranscriptIndexCache();
+    await cache.refreshAndWait(sessionId, transcriptPath);
+    const summary = cache.getSummary(sessionId, transcriptPath);
+
+    expect(summary?.sessionSummary).toBeNull();
+  });
+
+  it("does not re-call the summarizer on a later refresh when the recent prompts haven't changed", async () => {
+    const summarizeSession = vi.fn(async (_input: { recentPrompts: string[] }) => ({
+      description: "steady state",
+    }));
+    const summarizer: Pick<Summarizer, "summarizeTurn" | "summarizeSession"> = {
+      summarizeTurn: async () => null,
+      summarizeSession,
+    };
+
+    const lines = [0, 1].flatMap((i) => turnLines(i, i * 1000, true));
+    await writeFile(transcriptPath, lines.map((l) => `${l}\n`).join(""));
+
+    const cache = new TranscriptIndexCache(undefined, summarizer, createSummaryCache(cacheDir));
+    await cache.refreshAndWait(sessionId, transcriptPath);
+    expect(summarizeSession).toHaveBeenCalledTimes(1);
+
+    // A second refresh tick over the same, unchanged transcript should not
+    // call the summarizer again: the recent-prompts fingerprint hasn't moved.
+    await cache.refreshAndWait(sessionId, transcriptPath);
+    expect(summarizeSession).toHaveBeenCalledTimes(1);
+
+    // Appending a new turn changes the recent-prompts window, so the next
+    // refresh calls the summarizer again.
+    const newTurn = turnLines(2, 2000, true);
+    await appendFile(transcriptPath, newTurn.map((l) => `${l}\n`).join(""));
+    await cache.refreshAndWait(sessionId, transcriptPath);
+    expect(summarizeSession).toHaveBeenCalledTimes(2);
+
+    const summary = cache.getSummary(sessionId, transcriptPath);
+    expect(summary?.sessionSummary).toEqual({ description: "steady state" });
+  });
+
+  it("retries on an unchanged window after a failure, and stops once one call succeeds", async () => {
+    // The fingerprint is stored only on success, so a failed call leaves the
+    // window looking unsummarized and every later tick calls again. Without
+    // that, a summarizer that was unreachable at the first tick would stay
+    // null until the operator happened to send another prompt.
+    const summarizeSession = vi
+      .fn(async (_input: { recentPrompts: string[] }): Promise<{ description: string } | null> => null)
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(null)
+      .mockResolvedValue({ description: "back online" });
+    const summarizer: Pick<Summarizer, "summarizeTurn" | "summarizeSession"> = {
+      summarizeTurn: async () => null,
+      summarizeSession,
+    };
+
+    const lines = [0, 1].flatMap((i) => turnLines(i, i * 1000, true));
+    await writeFile(transcriptPath, lines.map((l) => `${l}\n`).join(""));
+
+    const cache = new TranscriptIndexCache(undefined, summarizer, createSummaryCache(cacheDir));
+
+    await cache.refreshAndWait(sessionId, transcriptPath);
+    expect(summarizeSession).toHaveBeenCalledTimes(1);
+    expect(cache.getSummary(sessionId, transcriptPath)?.sessionSummary).toBeNull();
+
+    // Same transcript, same window, and it calls again anyway.
+    await cache.refreshAndWait(sessionId, transcriptPath);
+    expect(summarizeSession).toHaveBeenCalledTimes(2);
+    expect(cache.getSummary(sessionId, transcriptPath)?.sessionSummary).toBeNull();
+
+    // Third call succeeds and the description lands with no new turn.
+    await cache.refreshAndWait(sessionId, transcriptPath);
+    expect(summarizeSession).toHaveBeenCalledTimes(3);
+    expect(cache.getSummary(sessionId, transcriptPath)?.sessionSummary).toEqual({
+      description: "back online",
+    });
+
+    // Now that it has succeeded, the fingerprint gates further calls.
+    await cache.refreshAndWait(sessionId, transcriptPath);
+    expect(summarizeSession).toHaveBeenCalledTimes(3);
   });
 });

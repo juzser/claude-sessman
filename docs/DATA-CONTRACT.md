@@ -372,8 +372,8 @@ flagged.
 assistant did in one turn. The user's prompt is always rendered from real
 captured text (`TranscriptTurn.prompt`) and is never LLM-summarized, so
 `TurnSummary` carries no prompt field; `SessionSummary` (`{ description:
-string }`, not currently attached to any response payload) is trimmed the
-same way. Which backend produces `TurnSummary` is selected by
+string }`, documented below) is trimmed the same way. Which backend produces
+either summary is selected by
 `config.summarizer.kind` (`server/src/config.ts`, wired in
 `server/src/server.ts`'s `startServer`): `"null"` (the default) uses
 `NullSummarizer`, which always resolves `null` and never spawns or contacts
@@ -431,6 +431,31 @@ Behavioral rules that apply regardless of which `Summarizer` is selected:
   but is unreachable or its binary is missing. Treat `summary` as an
   enrichment that is usually absent, never a value to depend on being
   present.
+
+**`TranscriptSummary.sessionSummary: SessionSummary | null`** (`{ description:
+string }`, `server/src/summarizer.ts`) — one short line describing what the
+whole session is currently about, for the session card's header. Unlike
+`TranscriptTurn.summary` it is built from prompts only: the same 3 most recent
+turns (`RECENT_SUMMARY_COUNT`), passed as `recentPrompts` and never including
+any assistant text. It rides on `TranscriptSummary`, so it appears on
+`/api/sessions`' `transcriptSummary`, on `/detail`'s `transcriptDetail`, and
+nowhere in `FlowSummary`. Every rule in the list above applies to it too — same
+opt-in default, same asynchronous population, same "usually absent" posture —
+with two differences:
+
+- It is **not** backed by `summary-cache.ts`. That file's key is
+  `(sessionId, turnIndex)`, which models a turn as immutable once written; the
+  session description is recomputed from an ever-shifting window, so keying it
+  by `turnIndex` — or by every fingerprint ever observed — would only grow the
+  file with no natural prune point.
+- Its in-memory dedup is a fingerprint of the exact `recentPrompts` that
+  produced the current description, stored **only on success**
+  (`refreshSessionSummary` in `transcript-index.ts`). An unchanged window
+  therefore skips the call, but only once a call has succeeded: after a
+  failure every later tick calls again, on a stable window as much as a moving
+  one. That is deliberate — a summarizer that was unreachable surfaces a
+  description as soon as it recovers, instead of sitting `null` until the
+  operator happens to send another prompt.
 
 Text captured for `prompt`/`gist` collapses whitespace and is capped at
 2000 chars internally (`MAX_CAPTURE_LENGTH`); display-time truncation is a

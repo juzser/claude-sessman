@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { formatTokenCount, formatTurnTime, sortToolCounts, truncateLine } from "./transcript-format";
+import { formatTokenCount, formatTurnTime, replyText, sortToolCounts, truncateLine } from "./transcript-format";
 
 describe("truncateLine", () => {
   it("returns short text unchanged", () => {
@@ -85,5 +85,22 @@ describe("formatTurnTime", () => {
 
   it("falls back to the raw string for an unrecognised shape rather than throwing", () => {
     expect(formatTurnTime("not-a-timestamp")).toBe("not-a-timestamp");
+  });
+});
+
+describe("replyText", () => {
+  it("prefers the LLM summary when one exists", () => {
+    const turn = { summary: { response: "summarized reply" }, gist: { text: "raw gist", truncated: false } };
+    expect(replyText(turn)).toBe("summarized reply");
+  });
+
+  it("falls back to the raw captured gist when there is no summary", () => {
+    const turn = { summary: null, gist: { text: "raw gist", truncated: false } };
+    expect(replyText(turn)).toBe("raw gist");
+  });
+
+  it("still returns the summary when the raw gist is empty", () => {
+    const turn = { summary: { response: "summarized reply" }, gist: { text: "", truncated: false } };
+    expect(replyText(turn)).toBe("summarized reply");
   });
 });

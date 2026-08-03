@@ -19,8 +19,8 @@
   sessions-service.ts (getSessions: enrich all, filter to alive unless includeDead)
         │
         ├─ GET  /api/sessions              ──► web: useSessions() initial load
-        ├─ GET  /api/sessions/:id/detail   ──► web: SessionDetailDrawer Turns-tab fetch
-        ├─ GET  /api/sessions/:id/flow     ──► web: SessionDetailDrawer Flow-tab fetch → flow-model.ts → SessionFlowView.vue
+        ├─ GET  /api/sessions/:id/detail   ──► (no web consumer today, see docs/API.md)
+        ├─ GET  /api/sessions/:id/flow     ──► web: SessionFlowSheet fetch → flow-model.ts → SessionFlowView.vue
         ├─ POST /api/sessions/:id/focus    ──► web: FocusButton
         └─ WS   /ws  (broadcast on change) ──► web: ws-client (reconnect + backoff)
                     ▲
@@ -243,25 +243,29 @@ each time. There is no separate liveness timer.
   sessions" from the first frame onward. Reconnect/backoff state
   (`connectionState`) is separate from the session data itself; `App.vue`
   only uses it to show/hide a "lost connection, retrying…" banner.
-- **`SessionDetailDrawer.vue`** does **not** share the WS-fed session list.
-  Opening it (a non-null `sessionId` prop) triggers its own one-shot
-  `GET /api/sessions/:id/detail` fetch; the result is *not* refreshed by
-  later WS pushes while the drawer stays open — only a manual "Retry"
-  click, or closing and reopening the drawer, re-fetches. This is a
-  deliberate simplification (see "Known limitations" below), not an
-  accidental omission.
-  - **Stale-response guard**: `load(sessionId)` closes over the id it was
-    called with; once the `await fetchSessionDetail(sessionId)` resolves,
-    it checks `if (props.sessionId !== sessionId) return` before touching
-    any ref. This stops a slow response for a session the user has since
-    closed or switched away from from overwriting the drawer's current
-    (newer, or absent) state.
-  - The Flow tab works the same way through its own `loadFlow(sessionId)`,
-    which fetches `GET /api/sessions/:id/flow` and applies the identical
-    `if (props.sessionId !== sessionId) return` guard before storing the
-    result. Both fetching and this guard live entirely in
-    `SessionDetailDrawer.vue` — the Flow tab's own component below has no
-    fetch logic of its own.
+- **`useAggregateUsage.ts`** takes the *same* session list the grid renders
+  and folds it into the right rail's totals: a field-wise token sum, a
+  per-model call tally, and the running-subagent list. It issues no request
+  of its own, so the rail can never disagree with the cards beside it, and
+  the rail costs nothing per WS frame beyond the fold.
+- **`SessionFlowSheet.vue`** does **not** share the WS-fed session list for
+  its flow data. Opening it (a non-null `session` prop) triggers its own
+  one-shot `GET /api/sessions/:id/flow` fetch; the graph is *not* refreshed
+  by later WS pushes while the Sheet stays open — only a manual "Retry"
+  click, or closing and reopening it, re-fetches. This is a deliberate
+  simplification (see "Known limitations" below), not an accidental
+  omission. The session *header* is the exception: `App.vue` resolves the
+  open session against the live list on every frame rather than capturing
+  it on click, so the title, path and usage line stay current and the Sheet
+  closes itself when its session ends.
+  - **Stale-response guard**: `loadFlow(sessionId)` closes over the id it
+    was called with; once the `await fetchSessionFlow(sessionId)` resolves,
+    it checks `if (props.session?.sessionId !== sessionId) return` before
+    touching any ref. This stops a slow response for a session the operator
+    has since closed or switched away from from overwriting the Sheet's
+    current (newer, or absent) state. `retryFlow()` additionally refuses to
+    start a second request while one is in flight, so two responses cannot
+    resolve out of order with the loser winning.
 - **`web/src/lib/flow-model.ts`** is pure and deterministic: its
   `buildFlowGraph()` maps a `FlowSummary` payload straight to Vue Flow
   nodes/edges with no I/O and no randomness — a node's `id` and vertical
@@ -269,14 +273,16 @@ each time. There is no separate liveness timer.
   position in the `turns` array, so relayout is stable even as older turns
   age out of the server's retention window.
 - **`web/src/components/SessionFlowView.vue`** is purely presentational —
-  it renders whatever `flow`/`state`/`errorMessage` props
-  `SessionDetailDrawer.vue` passes it and emits a `retry` event; it does not
+  it renders whatever `flow`/`state`/`errorMessage`/`focusTurnIndex` props
+  `SessionFlowSheet.vue` passes it and emits a `retry` event; it does not
   fetch anything itself and holds no stale-response guard of its own (that
-  logic lives one level up, in `loadFlow()` above).
+  logic lives one level up, in `loadFlow()` above). It owns exactly two
+  pieces of local state: which nodes the operator has expanded, and the Vue
+  Flow store handle it uses to pan to `focusTurnIndex`.
 
 ## Known limitations / non-goals
 
-- The detail drawer is a snapshot as of when it was opened, not a live
+- The flow Sheet's graph is a snapshot as of when it was opened, not a live
   view — it does not re-fetch on WS pushes while open.
 - No auth beyond the local-origin guard (`X-Sessman-Client` header +
   `Origin` allowlist) — a defense against a random web page, not

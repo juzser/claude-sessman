@@ -29,9 +29,10 @@ Full spec and decisions: `docs/ROADMAP.md`.
 - every non-trivial module has a colocated `*.test.ts`
 
 `web/src/` (by concern):
-- `App.vue` — root state (sessions, query/sort, selected session, 1s clock)
-- `components/` — `SessionCard.vue`, `SessionDetailDrawer.vue`, `TranscriptTurnList.vue`, `SessionFlowView.vue` (Vue Flow rendering, presentational only), `FocusButton.vue`
-- `composables/useSessions.ts` — initial fetch + WS subscribe
+- `App.vue` — root state (sessions, query/sort, expanded session + turn, 1s clock) and the two-column shell: session grid on the left, aggregate rail on the right
+- `components/` — `SessionCard.vue` (one live session: avatar, status Lozenge, description, turn strip), `TurnStrip.vue` (the card's three most recent turns, left to right), `SessionFlowSheet.vue` (owns the `/flow` fetch and the Sheet chrome), `SessionFlowView.vue` (Vue Flow rendering, presentational only), `AggregatePanel.vue` → `TokenUsageRailCard.vue` + `RunningSubagentsRailCard.vue` (the right rail), `ConnectionLozenge.vue`, `FocusButton.vue`, `ThemeToggle.vue`
+- `components/ui/` — the vendored design-system primitives; see `docs/DESIGN.md` for the closed set and what deviates from the master
+- `composables/` — `useSessions.ts` (initial fetch + WS subscribe), `useAggregateUsage.ts` (folds the same session list into the rail's totals, never re-fetching)
 - `lib/` — pure logic + API client: `ws-client.ts`, `sessman-api.ts`, `types.ts` (duplicated from the server, see below), `status.ts`, `sort-filter.ts`, `time-ago.ts`, `path.ts`, `identicon.ts`, `transcript-format.ts`, `flow-model.ts` (pure `/flow` payload → Vue Flow nodes/edges mapping) — each with a colocated `*.test.ts`
 
 Docs: `docs/ARCHITECTURE.md`, `docs/API.md`, `docs/DEVELOPMENT.md`, `docs/DATA-CONTRACT.md`, `docs/ROADMAP.md`.

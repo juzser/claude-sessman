@@ -1,15 +1,18 @@
 <script setup lang="ts">
 import { computed } from "vue";
-import { avatarGradientFor, avatarStyleFor } from "../lib/identicon";
+import { Lozenge, type LozengeVariants } from "@/components/ui/lozenge";
+import { avatarGradientFor, monogramFor } from "../lib/identicon";
 import { shortenPath } from "../lib/path";
 import { displayNameFor } from "../lib/sort-filter";
-import { statusVisualFor } from "../lib/status";
-import { formatAgo, formatDurationShort } from "../lib/time-ago";
-import { formatTokenCount, truncateLine } from "../lib/transcript-format";
+import { statusVisualFor, type StatusVisual } from "../lib/status";
+import { formatAgo } from "../lib/time-ago";
+import { truncateLine } from "../lib/transcript-format";
 import type { EnrichedSession } from "../lib/types";
 import FocusButton from "./FocusButton.vue";
+import TurnStrip from "./TurnStrip.vue";
 
-const PROMPT_LINE_MAX_LENGTH = 90;
+const DESCRIPTION_MAX_LENGTH = 90;
+const STRIP_TURN_COUNT = 3;
 
 const props = defineProps<{
   session: EnrichedSession;
@@ -18,13 +21,29 @@ const props = defineProps<{
   now: number;
 }>();
 
-const emit = defineEmits<{ select: [sessionId: string] }>();
+// The session id travels with the turn index because the parent opens one
+// shared flow Sheet for whichever card was expanded.
+const emit = defineEmits<{ expand: [sessionId: string, turnIndex: number] }>();
 
-const avatarStyle = computed(() => avatarStyleFor(props.session.sessionId));
 const avatarGradient = computed(() => avatarGradientFor(props.session.sessionId));
 const name = computed(() => displayNameFor(props.session));
+const monogram = computed(() => monogramFor(name.value));
 const path = computed(() => shortenPath(props.session.cwd, props.home));
-const statusVisual = computed(() => statusVisualFor(props.session.status, props.session.alive));
+
+/**
+ * Tone deliberately keeps today's colours (busy=amber, idle=emerald) rather
+ * than the six-family remap: this is what the operator reads at a glance every
+ * day, and only the wording changed. The tone lives on this Lozenge alone;
+ * the card surface below is identical for every status.
+ */
+const STATUSES: Record<StatusVisual, { tone: LozengeVariants["tone"]; label: string }> = {
+  busy: { tone: "warning", label: "Working" },
+  idle: { tone: "success", label: "Waiting on you" },
+  stale: { tone: "neutral", label: "Stale" },
+  dead: { tone: "neutral", label: "Ended" },
+};
+
+const status = computed(() => STATUSES[statusVisualFor(props.session.status, props.session.alive)]);
 
 const lastActivityAgoSec = computed(() => {
   // now is refreshed every second by the parent; recompute the "ago" text
@@ -34,127 +53,60 @@ const lastActivityAgoSec = computed(() => {
   return Math.max(0, Math.round((props.now - anchorMs) / 1000));
 });
 
-const uptimeSec = computed(() => {
-  return Math.max(0, Math.round((props.now - props.session.startedAt) / 1000));
-});
-
-const statusLabel = computed(() => {
-  switch (statusVisual.value) {
-    case "busy":
-      return "busy";
-    case "idle":
-      return "idle";
-    case "dead":
-      return "dead";
-    default:
-      return props.session.status;
-  }
-});
-
-const dotClass = computed(() => {
-  switch (statusVisual.value) {
-    case "busy":
-      return "bg-amber-400 animate-pulse";
-    case "idle":
-      return "bg-emerald-400";
-    default:
-      return "bg-slate-500";
-  }
-});
-
-// transcriptSummary is null until the transcript index completes its first
-// scan; every field below falls back to a stable placeholder of the same
-// shape so the card never reflows once the summary arrives.
-const promptLine = computed(() => {
-  const prompt = props.session.transcriptSummary?.lastUserPrompt;
-  if (!prompt) return "No transcript indexed yet";
-  // truncateLine already appends its own ellipsis once the collapsed text
-  // exceeds the card's display width, regardless of the server's own
-  // (much longer) truncation of the stored prompt text.
-  return truncateLine(prompt.text, PROMPT_LINE_MAX_LENGTH);
-});
-
-const modelLabel = computed(() => props.session.transcriptSummary?.model ?? "model —");
-
-const turnsLabel = computed(() => {
+/**
+ * One line saying what this session is doing. The summarized description and
+ * the raw prompt share this slot and its styling on purpose: a summarized card
+ * must not be visually distinguishable from an unsummarized one, so there is
+ * nothing here marking which of the two the operator is reading.
+ */
+const description = computed(() => {
   const summary = props.session.transcriptSummary;
-  return summary ? `${summary.turnCount} turns` : "— turns";
+  const text = summary?.sessionSummary?.description ?? summary?.lastUserPrompt?.text;
+  if (!text) return "No transcript indexed yet";
+  return truncateLine(text, DESCRIPTION_MAX_LENGTH);
 });
 
-const toolsLabel = computed(() => {
-  const summary = props.session.transcriptSummary;
-  return summary ? `${summary.toolCallsTotal} tool calls` : "— tool calls";
+// The list payload already carries recentTurns, so the strip costs no extra
+// fetch. Oldest-first within the slice, matching TurnStrip's left-to-right read.
+const recentTurns = computed(() => {
+  return (props.session.transcriptSummary?.recentTurns ?? []).slice(-STRIP_TURN_COUNT);
 });
-
-const contextLabel = computed(() => {
-  const usage = props.session.transcriptSummary?.usage;
-  return usage ? `ctx ${formatTokenCount(usage.contextTokens)}` : "ctx —";
-});
-
-function onOpenClick(event: MouseEvent): void {
-  // Safari does not focus a <button> on click by default; focus it explicitly
-  // so the drawer's "return focus to the originating card" behavior has a
-  // reliable target to restore focus to regardless of browser or input method.
-  (event.currentTarget as HTMLElement | null)?.focus();
-  emit("select", props.session.sessionId);
-}
 </script>
 
 <template>
   <article
-    class="flex flex-col gap-3 rounded-xl border border-slate-800 bg-slate-900/60 p-4 shadow-xs transition hover:border-slate-700"
+    class="flex flex-col gap-3 rounded-card bg-surface-raised p-4 shadow-raised ring-1 ring-line"
     :data-session-id="session.sessionId"
   >
-    <button
-      type="button"
-      class="flex flex-col gap-3 text-left"
-      @click="onOpenClick"
-    >
-      <header class="flex items-center gap-3">
-        <div
-          class="flex h-10 w-10 shrink-0 items-center justify-center rounded-full text-base text-white/90"
-          :style="{ backgroundImage: avatarGradient }"
-          aria-hidden="true"
-        >
-          {{ avatarStyle.glyph }}
-        </div>
-        <div class="min-w-0 flex-1">
-          <p class="truncate text-sm font-medium text-slate-100" :title="name">{{ name }}</p>
-          <p class="truncate text-xs text-slate-400" :title="session.cwd">{{ path }}</p>
-        </div>
-        <span
-          class="h-2.5 w-2.5 shrink-0 rounded-full"
-          :class="dotClass"
-          :title="`status: ${statusLabel}`"
-          role="status"
-          :aria-label="`status: ${statusLabel}`"
-        />
-      </header>
-
-      <p class="line-clamp-1 min-h-4 text-xs text-slate-300" :title="promptLine">
-        {{ promptLine }}
-      </p>
-
-      <div class="flex flex-wrap items-center gap-2 text-xs text-slate-400">
-        <span
-          v-if="session.git"
-          class="rounded-full border border-slate-700 px-2 py-0.5"
-          :class="session.git.dirty ? 'text-amber-300' : 'text-slate-300'"
-        >
-          {{ session.git.branch }}<span v-if="session.git.dirty">*</span>
-        </span>
-        <span>uptime {{ formatDurationShort(uptimeSec) }}</span>
+    <header class="flex items-center gap-3">
+      <!-- Decorative: the name it stands for is spelled out immediately after,
+           so a reader hearing both would hear the same word twice. -->
+      <div
+        data-slot="session-avatar"
+        class="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-sm font-semibold text-on-bold"
+        :style="{ backgroundImage: avatarGradient }"
+        aria-hidden="true"
+      >
+        {{ monogram }}
       </div>
-
-      <div class="flex flex-wrap items-center gap-2 text-[11px] text-slate-500">
-        <span>{{ modelLabel }}</span>
-        <span>{{ turnsLabel }}</span>
-        <span>{{ toolsLabel }}</span>
-        <span>{{ contextLabel }}</span>
+      <div class="min-w-0 flex-1">
+        <p class="truncate text-sm font-medium text-fg" :title="name">{{ name }}</p>
+        <p class="truncate text-xs text-fg-subtle" :title="session.cwd">{{ path }}</p>
       </div>
-    </button>
+      <Lozenge :tone="status.tone" variant="subtle">{{ status.label }}</Lozenge>
+    </header>
 
-    <footer class="flex items-center justify-between gap-2 text-xs text-slate-500">
+    <p data-slot="description" class="line-clamp-1 min-h-4 text-xs text-fg-subtle" :title="description">
+      {{ description }}
+    </p>
+
+    <TurnStrip
+      v-if="recentTurns.length > 0"
+      :turns="recentTurns"
+      @expand="(turnIndex) => emit('expand', session.sessionId, turnIndex)"
+    />
+
+    <footer class="flex items-center justify-between gap-2 text-xs text-fg-subtlest">
       <span>updated {{ formatAgo(lastActivityAgoSec) }}</span>
       <FocusButton :session-id="session.sessionId" size="sm" />
     </footer>

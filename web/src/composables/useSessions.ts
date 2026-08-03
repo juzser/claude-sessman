@@ -7,6 +7,8 @@ export interface UseSessionsResult {
   connectionState: Ref<ConnectionState>;
   loaded: Ref<boolean>;
   error: Ref<string | null>;
+  /** Re-runs the REST load after a failed one; the socket is left alone. */
+  retry: () => void;
 }
 
 function wsUrl(): string {
@@ -25,24 +27,36 @@ export function useSessions(): UseSessionsResult {
   const error = ref<string | null>(null);
 
   let socket: SessionSocket | null = null;
+  let loading = false;
 
-  onMounted(async () => {
+  async function loadSessions(): Promise<void> {
+    if (loading) return;
+    loading = true;
     try {
       const res = await fetch("/api/sessions");
       if (!res.ok) throw new Error(`GET /api/sessions -> ${res.status}`);
       const body = (await res.json()) as { sessions: EnrichedSession[] };
       sessions.value = body.sessions;
+      error.value = null;
     } catch (err) {
       error.value = err instanceof Error ? err.message : String(err);
     } finally {
+      loading = false;
       loaded.value = true;
     }
+  }
+
+  onMounted(async () => {
+    await loadSessions();
 
     socket = createSessionSocket(
       wsUrl(),
       {
         onSessions: (next) => {
           sessions.value = next;
+          // A frame arriving is proof the server is answering, so a failed
+          // REST load must not keep claiming otherwise while data streams in.
+          error.value = null;
         },
         onStateChange: (state) => {
           connectionState.value = state;
@@ -55,5 +69,13 @@ export function useSessions(): UseSessionsResult {
     socket?.close();
   });
 
-  return { sessions, connectionState, loaded, error };
+  return {
+    sessions,
+    connectionState,
+    loaded,
+    error,
+    retry: () => {
+      void loadSessions();
+    },
+  };
 }

@@ -10,7 +10,7 @@ import {
   type SubagentUsage,
 } from "./subagent-index.js";
 import { getOrSummarizeTurn, type SummaryCache } from "./summary-cache.js";
-import { NullSummarizer, type Summarizer, type TurnSummary } from "./summarizer.js";
+import { NullSummarizer, type SessionSummary, type Summarizer, type TurnSummary } from "./summarizer.js";
 
 const DEFAULT_TTL_MS = 1000;
 /** How many of the most-recently-seen turns ever carry an attached summary — never backfilled onto older turns. */
@@ -204,6 +204,8 @@ export interface TranscriptSummary {
   /** Per-model call counts and token totals, main chain + sidechain, sorted by calls desc then model name asc. */
   modelBreakdown: ModelUsage[];
   subagents: SubagentSummary;
+  /** Short LLM-generated description of what the session is currently about, built from its most recent prompts. Null by default (SESSMAN_SUMMARIZER=null) or on any summarizer failure; see refreshSessionSummary. */
+  sessionSummary: SessionSummary | null;
 }
 
 /** Payload for the flow view: every retained turn (up to MAX_FLOW_TURNS), oldest first. */
@@ -281,6 +283,10 @@ interface IndexState {
   assistantMessageDedup: Map<string, AssistantMessageDedup>;
   /** Incremental scan state for `<transcriptDir>/<sessionId>/subagents/*.jsonl` — the real per-subagent transcripts, separate from the inline isSidechain path above. */
   subagentIndex: SubagentIndexState;
+  /** Last successfully computed session description, or null before the first success (or when never opted in). See refreshSessionSummary. */
+  sessionSummary: SessionSummary | null;
+  /** Fingerprint of the recentPrompts that produced sessionSummary, so an unchanged window skips re-calling the summarizer. Null until the first successful computation. */
+  sessionSummaryFingerprint: string | null;
 }
 
 interface CacheEntry {
@@ -316,6 +322,8 @@ function emptyState(): IndexState {
     pendingSubagents: new Map(),
     assistantMessageDedup: new Map(),
     subagentIndex: emptySubagentIndexState(),
+    sessionSummary: null,
+    sessionSummaryFingerprint: null,
   };
 }
 
@@ -721,11 +729,55 @@ async function refreshRecentTurnSummaries(
   );
 }
 
+/**
+ * Recomputes `state.sessionSummary` from the RECENT_SUMMARY_COUNT most recent
+ * turns' prompts (the same "recent window" refreshRecentTurnSummaries uses
+ * for per-turn summaries), gated by a fingerprint of that same prompt window
+ * so an unchanged session skips the LLM call rather than re-summarizing on
+ * every background-refresh tick (ttlMs is 1s; a session can sit between
+ * turns far longer than that). A failed/null result leaves both
+ * sessionSummary and sessionSummaryFingerprint untouched and never throws.
+ * Because the fingerprint is stored only on success, the retry that follows
+ * a failure is not gated by it: every later tick calls again, on a stable
+ * window as much as a moving one, until one call succeeds. That is the
+ * point. A summarizer that was unreachable should surface a description as
+ * soon as it recovers, not sit null until the operator happens to send
+ * another prompt. It mirrors the "never cache a miss" rule that
+ * getOrSummarizeTurn already applies to per-turn summaries.
+ *
+ * Deliberately NOT backed by summary-cache.ts's on-disk, turnIndex-keyed
+ * cache: that cache's key models an immutable, once-written turn, whereas
+ * the session description is recomputed from an ever-shifting window of the
+ * same few turns as the conversation continues. Keying entries by turnIndex
+ * (or by every observed prompt-window fingerprint) would only ever grow the
+ * file since a session's window keeps changing right up until it ends, with
+ * no natural point to prune old entries the way per-turn pruning does. An
+ * in-memory fingerprint on IndexState already gives the cheap-cadence
+ * dedup this needs without persisting anything across restarts, which the
+ * session description doesn't need to survive anyway.
+ */
+async function refreshSessionSummary(
+  state: IndexState,
+  summarizer: Pick<Summarizer, "summarizeSession">,
+): Promise<void> {
+  const recentPrompts = state.recentTurns.slice(-RECENT_SUMMARY_COUNT).map((turn) => turn.prompt.raw);
+  if (recentPrompts.length === 0) return;
+
+  const fingerprint = JSON.stringify(recentPrompts);
+  if (fingerprint === state.sessionSummaryFingerprint) return;
+
+  const result = await summarizer.summarizeSession({ recentPrompts });
+  if (result) {
+    state.sessionSummary = result;
+    state.sessionSummaryFingerprint = fingerprint;
+  }
+}
+
 async function refreshOne(
   prior: IndexState | null,
   transcriptPath: string,
   sessionId: string,
-  summarizer: Pick<Summarizer, "summarizeTurn">,
+  summarizer: Pick<Summarizer, "summarizeTurn" | "summarizeSession">,
   summaryCache: SummaryCache,
 ): Promise<IndexState | null> {
   let stats;
@@ -762,6 +814,7 @@ async function refreshOne(
   // this whole function only ever runs inside a background refresh (see
   // TranscriptIndexCache.startRefresh), which those reads never await.
   await refreshRecentTurnSummaries(state, sessionId, summarizer, summaryCache);
+  await refreshSessionSummary(state, summarizer);
 
   return state;
 }
@@ -854,6 +907,7 @@ function toSummary(state: IndexState, textLimit: number): TranscriptSummary {
     subagentUsage: combineUsage(state.subagentUsage, fileUsage),
     modelBreakdown: buildModelBreakdown(state.modelUsage),
     subagents: toSubagentSummary(state, subagentRecords),
+    sessionSummary: state.sessionSummary,
   };
 }
 
@@ -883,7 +937,7 @@ export class TranscriptIndexCache {
 
   constructor(
     private readonly ttlMs: number = DEFAULT_TTL_MS,
-    private readonly summarizer: Pick<Summarizer, "summarizeTurn"> = new NullSummarizer(),
+    private readonly summarizer: Pick<Summarizer, "summarizeTurn" | "summarizeSession"> = new NullSummarizer(),
     private readonly summaryCache: SummaryCache = NOOP_SUMMARY_CACHE,
   ) {}
 
