@@ -55,6 +55,19 @@ longer alive; any other value (or omitted) returns alive sessions only.
 Same enrichment path (`sessions-service.ts` → `getSessions`) backs both this
 route and the WS broadcast below, so both always agree.
 
+With `includeDead=1`, a session the server considers not alive always has
+`transcriptSummary: null` here, regardless of whether its transcript has
+ever been scanned. `enrichSession` (`server/src/enrich.ts`) only calls into
+`TranscriptIndexCache` for alive sessions — a dead session's entry (if one
+exists from before it died) is left as-is, untouched, rather than read. This
+keeps the periodic poll (every registry record, dead or alive, every 2s —
+see `docs/ARCHITECTURE.md`'s "Retention bound" note) from driving the cache
+with sessions nobody is looking at, which would otherwise evict genuinely
+live sessions once the registry's total session count crosses
+`MAX_CACHED_SESSIONS`. `/detail` and `/flow` below are unaffected: they read
+`TranscriptIndexCache` directly for a specific session, not through this
+field, so a dead session's transcript is still viewable on demand.
+
 ## `GET /api/sessions/:sessionId/detail`
 
 **No web consumer today.** The route and its client helper
@@ -225,7 +238,7 @@ omitted — the client never needs an `in`/`hasOwnProperty` check:
 | `procStart`, `version`, `peerProtocol`, `kind`, `entrypoint`, `name`, `updatedAt`, `statusUpdatedAt` | missing or wrong-typed in the registry JSON file |
 | `tty` | live process lookup found no tty (`ps` reported `"??"`), or the process couldn't be inspected |
 | `transcriptSize`, `transcriptMtime` | the transcript file doesn't exist yet (`stat` failed) |
-| `transcriptSummary` | no scan of this transcript has completed yet (first poll tick still in flight) — **not** the same as an empty transcript, which produces a real summary with `turnCount: 0` |
+| `transcriptSummary` | no scan of this transcript has completed yet (first poll tick still in flight), **or** the session is not alive (see `GET /api/sessions` above) — **not** the same as an empty transcript, which produces a real summary with `turnCount: 0` |
 | `git` | `cwd` is not inside a git repo, `git` isn't installed, or any other git failure |
 | `pidReuse: "unknown"` (not `null` — it's a 3-value enum, not nullable) | `procStart` or the live `ps lstart` value is missing/unparseable, so reuse can't be checked either way |
 

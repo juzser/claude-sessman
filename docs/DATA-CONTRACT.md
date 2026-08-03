@@ -214,8 +214,16 @@ run would silently restore the per-line double count.
 
 Bounding it, honestly: that "thousand entries" figure is per transcript, and
 `TranscriptIndexCache` holds one `IndexState` per `sessionId` it has been
-asked about recently — including dead sessions, since callers pass
-`includeDead: true`. Unlike `recentTurns` (`MAX_FLOW_TURNS`) and
+asked about recently. The periodic poll/broadcast path (`sessions-service.ts`
+→ `enrichSession`) only asks about alive sessions — a dead session's
+`EnrichedSession.transcriptSummary` is `null` and never triggers a read (see
+`docs/API.md`'s `GET /api/sessions` note) — precisely so a registry full of
+dead sessions can't keep pushing new entries into this cache forever. The
+on-demand `/detail` and `/flow` routes still read a specific dead session's
+`IndexState` directly when a caller opens one by id (`includeDead: true`
+there is only to find it, not to imply everything gets scanned), so a dead
+session can still occupy an entry — just from a bounded, user-driven action
+rather than every poll tick. Unlike `recentTurns` (`MAX_FLOW_TURNS`) and
 `pendingSubagents` (`MAX_RUNNING_SUBAGENTS`), this map has no cap of its
 own; instead `TranscriptIndexCache` itself is capped at
 `MAX_CACHED_SESSIONS` (50) sessions, least-recently-accessed evicted first

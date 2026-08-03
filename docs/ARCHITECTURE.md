@@ -99,6 +99,25 @@ capping the outer cache is sufficient and no second eviction policy was
 added for those inner maps. `GitInfoCache` has no such cap — it's smaller
 per entry and out of scope for this change.
 
+The cap alone isn't sufficient against a working set larger than
+`MAX_CACHED_SESSIONS`, though: the registry never prunes dead sessions, and
+the periodic poll/broadcast re-enriches every registry record, dead or
+alive, every `pollIntervalMs` (2s — see `watcher.ts`) forever. A count-based
+LRU cap facing an unbounded, always-touched working set just thrashes —
+every entry evicted this tick gets re-inserted (as a miss, forcing a full
+rescan) next tick, with dead entries crowding out sessions someone is
+actually watching. Raising the cap only moves that threshold; idle-based
+eviction doesn't help either, since a dead session touched every poll tick
+never goes idle. The actual fix is at the call site, not in this cache:
+`enrich.ts`'s `enrichSession` only calls into `TranscriptIndexCache` for
+sessions it has already determined are alive, so a registry's dead sessions
+never enter this cache via the periodic path at all — see `docs/API.md`'s
+`GET /api/sessions` note and `docs/DATA-CONTRACT.md`'s `transcriptSummary`
+discussion for the resulting `null` contract. With dead sessions excluded,
+the real working set is an operator's live sessions — comfortably under 50
+— restoring `MAX_CACHED_SESSIONS` to its intended role as a safety net
+rather than the primary bound.
+
 ## Caching contract: incremental transcript scan
 
 `transcript-index.ts`'s scan of a `.jsonl` transcript is the most
