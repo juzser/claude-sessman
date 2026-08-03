@@ -105,7 +105,7 @@ describe("useSessions", () => {
     const { connectionState } = await mountComposable();
     expect(connectionState.value).toBe("connecting");
 
-    handlers?.onStateChange("open");
+    handlers?.onStateChange?.("open");
     await nextTick();
 
     expect(connectionState.value).toBe("open");
