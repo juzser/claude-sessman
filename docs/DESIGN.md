@@ -271,23 +271,81 @@ re-deriving it.
   **Exit condition:** none — this repo tracks the spec, and would revert only
   if the master gains a success banner channel.
 
-- **2026-07-31 — Three vendored primitives are short of their spec contract.**
-  Each is inert today (no call site needs the missing piece), so none blocks
-  this PR, but all three are gaps against `profile/components.md` and are
-  recorded here rather than discovered later:
-  - `Card` omits `shadow-raised`; the spec's recipe is "hairline ring **plus**
-    `shadow-raised`". `Card` has no call sites yet, so the shadow is absent
-    from the compiled CSS entirely (correct JIT behaviour, not a build bug).
-    Must be fixed before the restructure PR starts consuming `Card`.
-  - `Button` has no `loading` variant or prop, though the spec says "`loading`
-    disables the control and spins the icon". `Button` *is* consumed here
-    (`FocusButton.vue`, `SessionFlowView.vue`); neither call site needs it.
-  - `SheetContent`'s icon-only close button has an `sr-only` label but no
-    Tooltip; the spec requires `aria-label` **and** a Tooltip for icon-only
-    buttons. The accessible name is satisfied, so this is a fidelity gap, not
-    an ARIA regression.
-  **Exit condition:** close all three when the restructure PR brings these
-  primitives into real use.
+- **2026-07-31 — Three vendored primitives were short of their spec contract.
+  Closed 2026-08-03, ahead of the restructure.** All three were inert (no call
+  site needed the missing piece) and the recorded exit condition was "close all
+  three when the restructure PR brings these primitives into real use". They
+  were closed earlier instead, so the restructure builds on primitives that
+  already match `profile/components.md`:
+  - `Card` omitted `shadow-raised`; the spec's recipe is "hairline ring **plus**
+    `shadow-raised`". Fixed, together with a ring that was
+    `ring-foreground/10` — an opacity-derived value, not a token — and is now
+    `ring-1 ring-line`.
+  - `Button` had no `loading` prop, though the spec says "`loading` disables
+    the control and spins the icon". Added: it sets `disabled` and `aria-busy`,
+    swaps the slot for the spinner on icon-only sizes, and carries
+    `motion-reduce:animate-none`, which the master's own `Button.jsx` does not.
+  - `SheetContent`'s icon-only close button had an `sr-only` label but no
+    Tooltip; the spec requires `aria-label` **and** a Tooltip. It now uses the
+    same `TooltipProvider > Tooltip > TooltipTrigger as-child` composition
+    `ThemeToggle.vue` already uses, with `aria-label="Close"` carrying the
+    accessible name — a tooltip is not an accessible name.
+
+  Found while closing them, and fixed in the same pass: **the `cva` size map
+  aliased `sm` and `icon-sm` to the 24px tier** (`h-control-sm` /
+  `size-control-sm`). `profile/components.md` puts `default`/`sm`/`icon`/
+  `icon-sm` at 32px and only `xs`/`icon-xs` at 24px, and the master's own
+  `.hds-btn--sm` / `.hds-btn--icon-sm` both set
+  `height:var(--ds-control-height)`. So `icon-sm` sat exactly *on* WCAG 2.5.8's
+  24px target floor rather than clearing it. Provenance checked before fixing:
+  upstream is correct, this was a defect in the hand-written Vue port. **That
+  is the whole risk of a hand-written port — no gate catches it.** The
+  byte-identical check in `adopters.md` covers `tokens.css` and the gate
+  scripts; a wrong token inside a `cva` map is invisible to every gate we run.
+
+- **2026-08-03 — Remaining hand-port drift in `Button`/`Card`, deliberately not
+  fixed here.** A design review comparing each vendored primitive against the
+  pack *source* (not against the spec prose) surfaced five more divergences.
+  None was introduced by the primitive work above, all are inert or
+  near-invisible today, and each would change pixels in files the restructure
+  is about to rewrite — so they are recorded rather than fixed mid-flight:
+  - Base radius: `rounded-control` (6px) is applied to every size. The pack's
+    `.hds-btn` base is `--ds-radius-lg` and only `sm`/`xs`/`icon-sm`/`icon-xs`
+    step down to `--ds-radius-control`, so `default` and `icon` are 2px off.
+  - `outline`: `bg-transparent` vs. the pack's `background:var(--ds-surface)`.
+    Most visible in dark mode.
+  - `secondary`: `bg-surface-sunken` + an opacity hover vs. the pack's
+    `--ds-neutral-subtle` ground with a text-colour-only hover — a different
+    token *and* a different hover mechanism.
+  - `inverse` / `inverse-ghost`: hardcoded (`bg-surface text-fg`,
+    `hover:bg-white/10`) instead of building from the ground-aware
+    `--ds-btn-fg` / `--ds-btn-ground` custom properties. Inert here: `Highlight`,
+    the surface that publishes them, is not vendored in this repo.
+  - `Card` ring: `ring-line` (`--ds-border`) rather than the pack's
+    `--ds-ring-card` composite, which `hds-tokens.css` already exposes as
+    `shadow-ring-card`. Near-identical in light, slightly duller in dark.
+  **Exit condition:** fold into the restructure PR, which is already rewriting
+  the markup that consumes these variants.
+
+- **2026-08-03 — `destructive` follows the profile, and the master disagrees
+  with itself.** `profile/components.md` specifies a filled destructive button
+  (`bg-danger-bold text-on-bold`); `hds/components/core/Button.jsx` implements
+  a low-emphasis tinted one (`color-mix(in srgb, var(--ds-danger-bold) 10%,
+  transparent)` on `--ds-danger-text`). This repo follows the profile, per the
+  documented precedence. Recorded because it is not a port defect to fix here
+  but a contradiction inside the master — the same shape as the
+  primary/dark-mode contrast entry above. **Exit condition:** upstream picks
+  one; this repo follows whichever survives.
+
+- **2026-08-03 — `Sheet` has no consumer, so its dialog a11y contract is
+  untested, not satisfied.** `SheetContent.test.ts` passes while reka-ui logs
+  `DialogContent requires a DialogTitle` and `Missing Description or
+  aria-describedby`. Those come from the test fixture mounting a bare body, not
+  from the primitive: reka-ui puts the title/description obligation on the
+  *consumer*, and no `.vue` in `web/src` imports `ui/sheet` yet. It is a
+  fixture artifact today and a real a11y gap the moment someone wires the first
+  `<Sheet>`. **Exit condition:** the first real consumer supplies a
+  `SheetTitle` (visually hidden if the design has no visible one).
 
 - **2026-07-31 — `Icon`'s size scale has no 10px step (upstream gap).**
   `ThemeToggle.vue` needs a `size-2.5` glyph, and `Icon`'s `cva` scale

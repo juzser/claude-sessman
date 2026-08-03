@@ -24,6 +24,21 @@ const props = withDefaults(defineProps<Props>(), {
 // Icon-only sizes have no room for a label beside the spinner, so the
 // spinner replaces the slot entirely instead of sitting next to it.
 const isIconOnly = computed(() => props.size === "icon" || props.size === "icon-xs" || props.size === "icon-sm")
+
+// The pack sizes a button's icon per control tier (16 / 14 / 12 px), so one
+// fixed spinner size reads off-weight against a static icon in the same slot:
+// too small on the 32px tiers, too large on the 24px ones. Mirrors the pack's
+// ICON_SIZE map through the Icon primitive's own token sizes.
+const SPINNER_SIZE = {
+  default: "default",
+  sm: "sm",
+  xs: "xs",
+  icon: "default",
+  "icon-sm": "default",
+  "icon-xs": "xs",
+} as const
+
+const spinnerSize = computed(() => SPINNER_SIZE[props.size ?? "default"])
 </script>
 
 <template>
@@ -38,11 +53,11 @@ const isIconOnly = computed(() => props.size === "icon" || props.size === "icon-
     :class="cn(buttonVariants({ variant, size }), props.class)"
   >
     <template v-if="isIconOnly">
-      <Icon v-if="loading" :icon="Loader2" size="sm" class="animate-spin motion-reduce:animate-none" />
+      <Icon v-if="loading" :icon="Loader2" :size="spinnerSize" class="animate-spin motion-reduce:animate-none" />
       <slot v-else />
     </template>
     <template v-else>
-      <Icon v-if="loading" :icon="Loader2" size="sm" class="animate-spin motion-reduce:animate-none" />
+      <Icon v-if="loading" :icon="Loader2" :size="spinnerSize" class="animate-spin motion-reduce:animate-none" />
       <slot />
     </template>
   </Primitive>
