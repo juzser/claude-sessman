@@ -1,24 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { mount } from "@vue/test-utils";
 import TurnStrip from "./TurnStrip.vue";
+import { makeTurn } from "../test/factories";
 import type { TranscriptTurn } from "../lib/types";
 
-/** Builds one synthetic turn with sane defaults, never real transcript content. */
-function makeTurn(index: number, overrides: Partial<TranscriptTurn> = {}): TranscriptTurn {
-  return {
-    index,
-    at: `2026-01-01T00:00:${String(index).padStart(2, "0")}.000Z`,
-    prompt: { text: `synthetic prompt ${index}`, truncated: false },
-    gist: { text: `synthetic gist ${index}`, truncated: false },
-    toolNames: [],
-    toolCalls: [],
-    toolCallsOmitted: 0,
-    filesTouched: [],
-    continuation: false,
-    summary: null,
-    ...overrides,
-  };
-}
+
 
 describe("TurnStrip", () => {
   it("renders one listitem per turn, in the order given", () => {

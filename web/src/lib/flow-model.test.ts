@@ -1,23 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { buildFlowGraph, NODE_Y_SPACING } from "./flow-model";
+import { makeTurn } from "../test/factories";
 import type { FlowSummary, TranscriptTurn } from "./types";
 
-/** Builds one synthetic turn with sane defaults, never real transcript content. */
-function makeTurn(index: number, overrides: Partial<TranscriptTurn> = {}): TranscriptTurn {
-  return {
-    index,
-    at: `2026-01-01T00:00:${String(index).padStart(2, "0")}.000Z`,
-    prompt: { text: `synthetic prompt ${index}`, truncated: false },
-    gist: { text: `synthetic gist ${index}`, truncated: false },
-    toolNames: [],
-    toolCalls: [],
-    toolCallsOmitted: 0,
-    filesTouched: [],
-    continuation: false,
-    summary: null,
-    ...overrides,
-  };
-}
+
 
 function makeFlow(turns: TranscriptTurn[], overrides: Partial<FlowSummary> = {}): FlowSummary {
   return {

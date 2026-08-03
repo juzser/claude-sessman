@@ -1,13 +1,13 @@
 import { describe, expect, it } from "vitest";
 import { ref } from "vue";
 import { aggregateUsage, useAggregateUsage } from "./useAggregateUsage";
+import { makeSession, makeSummary } from "../test/factories";
 import type {
   EnrichedSession,
   ModelUsage,
   RunningSubagent,
   SubagentAgentSummary,
   SummedUsage,
-  TranscriptSummary,
 } from "../lib/types";
 
 function makeUsage(overrides: Partial<SummedUsage> = {}): SummedUsage {
@@ -28,60 +28,6 @@ function makeModelUsage(model: string, overrides: Partial<ModelUsage> = {}): Mod
     outputTokens: 10,
     cacheReadTokens: 1000,
     cacheCreationTokens: 5,
-    ...overrides,
-  };
-}
-
-function makeSummary(overrides: Partial<TranscriptSummary> = {}): TranscriptSummary {
-  return {
-    turnCount: 1,
-    lastUserPrompt: null,
-    lastAssistantGist: null,
-    model: null,
-    usage: null,
-    toolCounts: {},
-    toolCallsTotal: 0,
-    lastEntryAt: null,
-    scannedBytes: 0,
-    complete: true,
-    recentTurns: [],
-    totalUsage: null,
-    subagentUsage: null,
-    modelBreakdown: [],
-    subagents: { sidechainLineCount: 0, lastSidechainAt: null, running: [], agents: [] },
-    sessionSummary: null,
-    ...overrides,
-  };
-}
-
-/** Builds one synthetic session; never real transcript paths or session ids. */
-function makeSession(sessionId: string, overrides: Partial<EnrichedSession> = {}): EnrichedSession {
-  return {
-    pid: 1000,
-    sessionId,
-    cwd: "/tmp/synthetic",
-    startedAt: 0,
-    procStart: null,
-    version: null,
-    peerProtocol: null,
-    kind: null,
-    entrypoint: null,
-    name: sessionId,
-    status: "running",
-    updatedAt: null,
-    statusUpdatedAt: null,
-    sourceFile: "/tmp/synthetic/session.json",
-    alive: true,
-    pidReuse: "match",
-    tty: null,
-    uptimeSec: 0,
-    lastActivityAgoSec: 0,
-    projectSlug: "synthetic",
-    transcriptPath: "/tmp/synthetic/transcript.jsonl",
-    transcriptSize: null,
-    transcriptMtime: null,
-    transcriptSummary: null,
-    git: null,
     ...overrides,
   };
 }

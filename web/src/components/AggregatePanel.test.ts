@@ -1,61 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { mount } from "@vue/test-utils";
 import AggregatePanel from "./AggregatePanel.vue";
-import type { EnrichedSession, TranscriptSummary } from "../lib/types";
-
-function makeSummary(overrides: Partial<TranscriptSummary> = {}): TranscriptSummary {
-  return {
-    turnCount: 1,
-    lastUserPrompt: null,
-    lastAssistantGist: null,
-    model: null,
-    usage: null,
-    toolCounts: {},
-    toolCallsTotal: 0,
-    lastEntryAt: null,
-    scannedBytes: 0,
-    complete: true,
-    recentTurns: [],
-    totalUsage: null,
-    subagentUsage: null,
-    modelBreakdown: [],
-    subagents: { sidechainLineCount: 0, lastSidechainAt: null, running: [], agents: [] },
-    sessionSummary: null,
-    ...overrides,
-  };
-}
-
-/** Builds one synthetic session; never real transcript paths or session ids. */
-function makeSession(sessionId: string, overrides: Partial<EnrichedSession> = {}): EnrichedSession {
-  return {
-    pid: 1000,
-    sessionId,
-    cwd: "/tmp/synthetic",
-    startedAt: 0,
-    procStart: null,
-    version: null,
-    peerProtocol: null,
-    kind: null,
-    entrypoint: null,
-    name: sessionId,
-    status: "running",
-    updatedAt: null,
-    statusUpdatedAt: null,
-    sourceFile: "/tmp/synthetic/session.json",
-    alive: true,
-    pidReuse: "match",
-    tty: null,
-    uptimeSec: 0,
-    lastActivityAgoSec: 0,
-    projectSlug: "synthetic",
-    transcriptPath: "/tmp/synthetic/transcript.jsonl",
-    transcriptSize: null,
-    transcriptMtime: null,
-    transcriptSummary: null,
-    git: null,
-    ...overrides,
-  };
-}
+import { makeSession, makeSummary } from "../test/factories";
 
 describe("AggregatePanel", () => {
   it("labels itself as a region covering every session, not the focused one", () => {
