@@ -4,8 +4,9 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { enrichSession } from "./enrich.js";
+import { enrichSession, enrichSessions } from "./enrich.js";
 import { GitInfoCache } from "./git-info.js";
+import { transcriptPathFor } from "./slug.js";
 import { TranscriptIndexCache } from "./transcript-index.js";
 import type { RawSessionRecord } from "./types.js";
 
@@ -140,4 +141,89 @@ describe("enrichSession", () => {
       await rm(repoDir, { recursive: true, force: true });
     }
   });
+});
+
+describe("enrichSessions cache thrash regression (dead sessions must not evict alive entries)", () => {
+  // Comfortably over MAX_CACHED_SESSIONS (50) on its own, so the eviction cap
+  // is guaranteed to engage regardless of exactly how many dead sessions get
+  // touched before the cap first kicks in.
+  const DEAD_COUNT = 55;
+  const ALIVE_COUNT = 3;
+
+  let gitCache: GitInfoCache;
+  let transcriptIndexCache: TranscriptIndexCache;
+
+  beforeEach(() => {
+    gitCache = new GitInfoCache();
+    transcriptIndexCache = new TranscriptIndexCache();
+  });
+
+  function makeAliveRaw(n: number): RawSessionRecord {
+    // Default pid (this test process) + no procStart -> alive: true, matching
+    // the "marks a session with a live pid as alive" convention above.
+    return makeRaw({
+      sessionId: `synthetic-thrash-alive-${n}`,
+      cwd: `/tmp/synthetic-thrash-alive-cwd-${n}`,
+    });
+  }
+
+  function makeDeadRaw(n: number): RawSessionRecord {
+    // Same "obviously invalid pid" idiom as "marks a session with a dead pid
+    // as not alive" above -> alive: false.
+    return makeRaw({
+      sessionId: `synthetic-thrash-dead-${n}`,
+      cwd: `/tmp/synthetic-thrash-dead-cwd-${n}`,
+      pid: 2 ** 30,
+    });
+  }
+
+  it(
+    "keeps a small set of already-cached alive sessions resident across repeated ticks that also enrich many dead sessions via Promise.all",
+    async () => {
+      const aliveRaws = Array.from({ length: ALIVE_COUNT }, (_, i) => makeAliveRaw(i));
+      const deadRaws = Array.from({ length: DEAD_COUNT }, (_, i) => makeDeadRaw(i));
+      // Never created on disk: getTranscriptInfo/gitCache both tolerate a
+      // missing path/cwd (see the "transcriptSummary:null before first scan"
+      // and "git:null for a cwd that is not a git repo" tests above), so no
+      // real transcript files are needed to exercise cache residency.
+      const options = { claudeProjectsDir: "/tmp/synthetic-thrash-projects-nonexistent", gitCache, transcriptIndexCache };
+
+      // Establish a realistic starting point: the operator's live sessions
+      // were already read and indexed on a prior tick, before the registry
+      // grew to include many dead entries.
+      await enrichSessions(aliveRaws, options);
+
+      // Settle those three background refreshes before going on. getSummary
+      // fires a refresh without awaiting it, and evictOverCap refuses to
+      // evict an entry while its pending promise is unresolved -- so leaving
+      // them in flight would make these three entries un-evictable for a
+      // window of unspecified length, and the assertion below would pass for
+      // that reason rather than the one it claims to test. Awaiting here puts
+      // them in the weakest possible state: resident, settled, and the oldest
+      // entries in the cache, i.e. exactly the ones an LRU evicts first.
+      for (const raw of aliveRaws) {
+        await transcriptIndexCache.refreshAndWait(
+          raw.sessionId,
+          transcriptPathFor({ projectsDir: options.claudeProjectsDir, cwd: raw.cwd, sessionId: raw.sessionId }),
+        );
+        expect(transcriptIndexCache.hasCached(raw.sessionId)).toBe(true);
+      }
+
+      // Two simulated poll ticks (watcher.ts -> sessions-service.ts enriches
+      // every registry record, dead or alive, via Promise.all, every 2s,
+      // forever). The dead subset is enriched on its own rather than
+      // interleaved with the alive one because, once the gate is in place,
+      // dead sessions never call getSummary at all -- there is no shared-cache
+      // interaction left to interleave, so the two shapes are indistinguishable
+      // here. Pre-fix they are equally indistinguishable, because 55 dead
+      // sessions alone already exceed the cap.
+      await enrichSessions(deadRaws, options);
+      await enrichSessions(deadRaws, options);
+
+      for (const raw of aliveRaws) {
+        expect(transcriptIndexCache.hasCached(raw.sessionId)).toBe(true);
+      }
+    },
+    15000,
+  );
 });

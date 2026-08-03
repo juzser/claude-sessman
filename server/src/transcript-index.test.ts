@@ -1569,3 +1569,142 @@ describe("TranscriptIndexCache session summaries", () => {
     expect(summarizeSession).toHaveBeenCalledTimes(3);
   });
 });
+
+describe("TranscriptIndexCache cache eviction (LRU cap)", () => {
+  let dir: string;
+
+  beforeEach(async () => {
+    dir = await mkdtemp(path.join(tmpdir(), "sessman-transcript-eviction-"));
+  });
+
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  // Mirrors MAX_CACHED_SESSIONS in transcript-index.ts. Kept as a literal
+  // here per this file's existing convention of hardcoding the numbers that
+  // mirror module constants rather than importing them (see the 100/20
+  // literals used above for MAX_FLOW_TURNS/MAX_RECENT_TURNS).
+  const CAP = 50;
+
+  /** Writes one single-turn synthetic transcript for a distinct synthetic session and returns its id + path. */
+  async function writeSyntheticSession(
+    n: number,
+    promptText = `synthetic prompt for session ${n}`,
+  ): Promise<{ sessionId: string; transcriptPath: string }> {
+    const sessionId = `synthetic-eviction-session-${n}`;
+    const transcriptPath = path.join(dir, `${sessionId}.jsonl`);
+    const line = userPromptLine(promptText, `2026-01-01T00:00:${String(n % 60).padStart(2, "0")}.000Z`);
+    await writeFile(transcriptPath, `${line}\n`);
+    return { sessionId, transcriptPath };
+  }
+
+  it("keeps the cache at or below the cap once more sessions than that have been indexed", async () => {
+    const cache = new TranscriptIndexCache();
+    for (let i = 0; i < CAP + 5; i++) {
+      const { sessionId, transcriptPath } = await writeSyntheticSession(i);
+      await cache.refreshAndWait(sessionId, transcriptPath);
+    }
+
+    expect(cache.size).toBeLessThanOrEqual(CAP);
+    expect(cache.size).toBe(CAP);
+  });
+
+  it("evicts the least-recently-accessed session, not the least-recently-written one", async () => {
+    // A long TTL so the touching read below can't also trigger a background
+    // refresh — any reordering it causes is then provably access-driven, not
+    // a side effect of a write.
+    const cache = new TranscriptIndexCache(60_000);
+    const sessions: Array<{ sessionId: string; transcriptPath: string }> = [];
+    for (let i = 0; i < CAP; i++) {
+      const session = await writeSyntheticSession(i);
+      sessions.push(session);
+      await cache.refreshAndWait(session.sessionId, session.transcriptPath);
+    }
+
+    // Touch session 0 — the least-recently-WRITTEN entry — so it becomes the
+    // most-recently-ACCESSED one instead.
+    cache.getSummary(sessions[0].sessionId, sessions[0].transcriptPath);
+
+    const overflow = await writeSyntheticSession(CAP);
+    await cache.refreshAndWait(overflow.sessionId, overflow.transcriptPath);
+
+    expect(cache.size).toBe(CAP);
+    // Session 0 was touched last and is protected; session 1 is now the
+    // least-recently-accessed and is evicted in its place.
+    expect(cache.hasCached(sessions[0].sessionId)).toBe(true);
+    expect(cache.hasCached(sessions[1].sessionId)).toBe(false);
+    expect(cache.hasCached(overflow.sessionId)).toBe(true);
+  });
+
+  it("still returns correct data after a from-scratch rescan of an evicted session", async () => {
+    const cache = new TranscriptIndexCache();
+    const sessions: Array<{ sessionId: string; transcriptPath: string }> = [];
+    for (let i = 0; i < CAP; i++) {
+      const session = await writeSyntheticSession(i);
+      sessions.push(session);
+      await cache.refreshAndWait(session.sessionId, session.transcriptPath);
+    }
+
+    const overflow = await writeSyntheticSession(CAP);
+    await cache.refreshAndWait(overflow.sessionId, overflow.transcriptPath);
+
+    // Session 0 is the oldest and was never touched again, so it's the one evicted.
+    expect(cache.hasCached(sessions[0].sessionId)).toBe(false);
+
+    await cache.refreshAndWait(sessions[0].sessionId, sessions[0].transcriptPath);
+    const summary = cache.getSummary(sessions[0].sessionId, sessions[0].transcriptPath);
+    expect(summary?.lastUserPrompt).toEqual({ text: "synthetic prompt for session 0", truncated: false });
+    expect(summary?.turnCount).toBe(1);
+  });
+
+  it("never evicts an entry whose refresh is still in flight, even at full capacity", async () => {
+    const pendingPrompt = "synthetic prompt for the pending target session";
+    const blocked = new Promise<null>(() => {
+      // Deliberately never settles within this test.
+    });
+    const summarizer: Pick<Summarizer, "summarizeTurn" | "summarizeSession"> = {
+      summarizeTurn: async () => null,
+      summarizeSession: async ({ recentPrompts }) => (recentPrompts.includes(pendingPrompt) ? blocked : null),
+    };
+    const cache = new TranscriptIndexCache(undefined, summarizer);
+
+    const target = await writeSyntheticSession(0, pendingPrompt);
+    // Non-blocking: kicks off the refresh and returns immediately, leaving it
+    // stuck inside summarizeSession's unresolved promise for the rest of this test.
+    cache.getSummary(target.sessionId, target.transcriptPath);
+    expect(cache.hasCached(target.sessionId)).toBe(true);
+
+    const fillers: Array<{ sessionId: string; transcriptPath: string }> = [];
+    for (let i = 1; i <= CAP; i++) {
+      const filler = await writeSyntheticSession(i);
+      fillers.push(filler);
+      await cache.refreshAndWait(filler.sessionId, filler.transcriptPath);
+    }
+
+    // The target's in-flight refresh must survive even though it is the
+    // oldest entry in the cache; the oldest non-pending entry (filler 1) is
+    // evicted in its place instead.
+    expect(cache.hasCached(target.sessionId)).toBe(true);
+    expect(cache.hasCached(fillers[0].sessionId)).toBe(false);
+    expect(cache.size).toBe(CAP);
+  });
+
+  it("lets the cache exceed the cap when every entry over it is still pending", async () => {
+    const blocked = new Promise<null>(() => {
+      // Deliberately never settles within this test.
+    });
+    const summarizer: Pick<Summarizer, "summarizeTurn" | "summarizeSession"> = {
+      summarizeTurn: async () => null,
+      summarizeSession: async () => blocked,
+    };
+    const cache = new TranscriptIndexCache(undefined, summarizer);
+
+    for (let i = 0; i < CAP + 3; i++) {
+      const { sessionId, transcriptPath } = await writeSyntheticSession(i);
+      cache.getSummary(sessionId, transcriptPath); // non-blocking; every one hangs forever
+    }
+
+    expect(cache.size).toBe(CAP + 3);
+  });
+});
