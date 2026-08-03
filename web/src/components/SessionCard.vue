@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed } from "vue";
 import { Lozenge, type LozengeVariants } from "@/components/ui/lozenge";
-import { avatarGradientFor, avatarStyleFor } from "../lib/identicon";
+import { avatarGradientFor, monogramFor } from "../lib/identicon";
 import { shortenPath } from "../lib/path";
 import { displayNameFor } from "../lib/sort-filter";
 import { statusVisualFor, type StatusVisual } from "../lib/status";
@@ -25,9 +25,9 @@ const props = defineProps<{
 // shared flow Sheet for whichever card was expanded.
 const emit = defineEmits<{ expand: [sessionId: string, turnIndex: number] }>();
 
-const avatarStyle = computed(() => avatarStyleFor(props.session.sessionId));
 const avatarGradient = computed(() => avatarGradientFor(props.session.sessionId));
 const name = computed(() => displayNameFor(props.session));
+const monogram = computed(() => monogramFor(name.value));
 const path = computed(() => shortenPath(props.session.cwd, props.home));
 
 /**
@@ -79,12 +79,15 @@ const recentTurns = computed(() => {
     :data-session-id="session.sessionId"
   >
     <header class="flex items-center gap-3">
+      <!-- Decorative: the name it stands for is spelled out immediately after,
+           so a reader hearing both would hear the same word twice. -->
       <div
-        class="flex h-10 w-10 shrink-0 items-center justify-center rounded-full text-base text-white/90"
+        data-slot="session-avatar"
+        class="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-sm font-semibold text-on-bold"
         :style="{ backgroundImage: avatarGradient }"
         aria-hidden="true"
       >
-        {{ avatarStyle.glyph }}
+        {{ monogram }}
       </div>
       <div class="min-w-0 flex-1">
         <p class="truncate text-sm font-medium text-fg" :title="name">{{ name }}</p>

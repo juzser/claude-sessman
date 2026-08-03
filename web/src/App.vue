@@ -135,7 +135,7 @@ function closeFlow(): void {
               aria-hidden="true"
             >
               <div class="flex items-center gap-3">
-                <Skeleton class="h-10 w-10 shrink-0 rounded-full" />
+                <Skeleton class="h-8 w-8 shrink-0 rounded-full" />
                 <div class="flex min-w-0 flex-1 flex-col gap-1.5">
                   <Skeleton class="h-3.5 w-40" />
                   <Skeleton class="h-3 w-56" />
