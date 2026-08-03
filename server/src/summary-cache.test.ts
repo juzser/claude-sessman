@@ -53,6 +53,38 @@ describe("createSummaryCache", () => {
     await expect(cache.getTurn(sessionId, 1)).resolves.toBeNull();
   });
 
+  it("strips fields a cache file kept from an older TurnSummary shape", async () => {
+    // A turn summarized before `prompt` was dropped from the contract still
+    // has the LLM's paraphrase of the user's prompt on disk. Nothing
+    // re-summarizes a turn that already hits, so without normalizing on read
+    // that paraphrase would be served for the life of the cache file.
+    const summariesDir = path.join(cacheDir, "summaries");
+    await mkdir(summariesDir, { recursive: true });
+    await writeFile(
+      path.join(summariesDir, `${sessionId}.json`),
+      JSON.stringify({ "4": { prompt: "paraphrased ask", response: "fixed it" } }),
+      "utf8",
+    );
+
+    const hit = await cache.getTurn(sessionId, 4);
+    expect(hit).toEqual({ response: "fixed it" });
+    expect(hit).not.toHaveProperty("prompt");
+  });
+
+  it("treats an entry with no usable response as a miss", async () => {
+    const summariesDir = path.join(cacheDir, "summaries");
+    await mkdir(summariesDir, { recursive: true });
+    await writeFile(
+      path.join(summariesDir, `${sessionId}.json`),
+      JSON.stringify({ "1": { prompt: "only a prompt" }, "2": { response: 42 }, "3": null }),
+      "utf8",
+    );
+
+    await expect(cache.getTurn(sessionId, 1)).resolves.toBeNull();
+    await expect(cache.getTurn(sessionId, 2)).resolves.toBeNull();
+    await expect(cache.getTurn(sessionId, 3)).resolves.toBeNull();
+  });
+
   it("does not lose entries when two turns of the same session are set concurrently", async () => {
     await Promise.all([
       cache.setTurn(sessionId, 1, { response: "first did" }),
