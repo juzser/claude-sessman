@@ -174,7 +174,7 @@ export interface TranscriptTurn {
   /** True when this turn's prompt is the post-compaction continuation preamble. */
   continuation: boolean;
   /**
-   * LLM-condensed {prompt, response} pair, present only for the
+   * LLM-condensed response summary, present only for the
    * RECENT_SUMMARY_COUNT most-recently-seen turns — never backfilled onto
    * older turns even if they were summarized in the past (see
    * `isWithinSummaryWindow` below). Null while unsummarized (no assistant

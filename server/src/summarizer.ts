@@ -1,6 +1,9 @@
-/** One recent turn's prompt/response reduced to a short pair for the card UI. */
+/**
+ * One recent turn's response reduced to a short summary for the card UI.
+ * The user's prompt is always rendered as real captured text and is never
+ * LLM-summarized, so this carries no prompt field.
+ */
 export interface TurnSummary {
-  prompt: string;
   response: string;
 }
 

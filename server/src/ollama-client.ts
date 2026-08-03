@@ -10,10 +10,11 @@ export interface OllamaClientConfig {
 const GENERATE_TIMEOUT_MS = 20_000;
 
 // A 3B model echoes instruction-like field descriptions back as answers, so
-// the JSON contract below deliberately uses short noun keys ("ask"/"did"/
-// "desc") instead of sentence-shaped field names, plus a few-shot example.
+// the JSON contract below deliberately uses short noun keys ("did"/"desc")
+// instead of sentence-shaped field names, plus a few-shot example.
 const TURN_SYSTEM_PROMPT =
-  "You summarize one turn of a coding assistant transcript into a short ask/did pair for a UI card. " +
+  "You summarize one turn of a coding assistant transcript into a short summary of what the assistant did, " +
+  "for a UI card. The user's prompt is shown separately as captured text; only summarize the response. " +
   "Respond with strict JSON only — no prose, no markdown fences — matching the example's shape exactly.";
 
 const SESSION_SYSTEM_PROMPT =
@@ -26,7 +27,7 @@ function buildTurnPrompt(input: { prompt: string; response: string }): string {
     "Example:",
     "prompt: Fix the failing login test",
     "response: Updated the mock token expiry and reran the suite; test passes now.",
-    'output: {"ask": "fix failing login test", "did": "fixed mock token expiry, test passes"}',
+    'output: {"did": "fixed mock token expiry, test passes"}',
     "",
     "Now summarize this turn:",
     `prompt: ${input.prompt}`,
@@ -64,10 +65,10 @@ function parseJsonReply(text: string): unknown | null {
   }
 }
 
-function isTurnPayload(value: unknown): value is { ask: string; did: string } {
+function isTurnPayload(value: unknown): value is { did: string } {
   if (typeof value !== "object" || value === null) return false;
   const record = value as Record<string, unknown>;
-  return typeof record.ask === "string" && typeof record.did === "string";
+  return typeof record.did === "string";
 }
 
 function isSessionPayload(value: unknown): value is { desc: string } {
@@ -93,7 +94,7 @@ export class OllamaSummarizer implements Summarizer {
     const parsed = parseJsonReply(reply);
     if (!isTurnPayload(parsed)) return null;
 
-    return { prompt: parsed.ask, response: parsed.did };
+    return { response: parsed.did };
   }
 
   async summarizeSession(input: { recentPrompts: string[] }): Promise<SessionSummary | null> {

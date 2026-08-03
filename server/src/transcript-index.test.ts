@@ -1298,8 +1298,7 @@ describe("TranscriptIndexCache turn summaries", () => {
   }
 
   it("attaches a summary to the 3 most recent turns only, leaving older turns unsummarized", async () => {
-    const summarizeTurn = vi.fn(async ({ prompt }: { prompt: string; response: string }) => ({
-      prompt: `SUM:${prompt}`,
+    const summarizeTurn = vi.fn(async (_input: { prompt: string; response: string }) => ({
       response: "condensed",
     }));
     const summarizer: Pick<Summarizer, "summarizeTurn"> = { summarizeTurn };
@@ -1314,15 +1313,14 @@ describe("TranscriptIndexCache turn summaries", () => {
     expect(summary?.recentTurns).toHaveLength(5);
     expect(summary?.recentTurns[0].summary).toBeNull();
     expect(summary?.recentTurns[1].summary).toBeNull();
-    expect(summary?.recentTurns[2].summary).toEqual({ prompt: "SUM:turn 2 prompt", response: "condensed" });
-    expect(summary?.recentTurns[3].summary).toEqual({ prompt: "SUM:turn 3 prompt", response: "condensed" });
-    expect(summary?.recentTurns[4].summary).toEqual({ prompt: "SUM:turn 4 prompt", response: "condensed" });
+    expect(summary?.recentTurns[2].summary).toEqual({ response: "condensed" });
+    expect(summary?.recentTurns[3].summary).toEqual({ response: "condensed" });
+    expect(summary?.recentTurns[4].summary).toEqual({ response: "condensed" });
     expect(summarizeTurn).toHaveBeenCalledTimes(3);
   });
 
   it("summarizes all 3 turns when the transcript has exactly the window size", async () => {
-    const summarizeTurn = vi.fn(async ({ prompt }: { prompt: string; response: string }) => ({
-      prompt: `SUM:${prompt}`,
+    const summarizeTurn = vi.fn(async (_input: { prompt: string; response: string }) => ({
       response: "condensed",
     }));
     const summarizer: Pick<Summarizer, "summarizeTurn"> = { summarizeTurn };
@@ -1335,14 +1333,14 @@ describe("TranscriptIndexCache turn summaries", () => {
     const summary = cache.getSummary(sessionId, transcriptPath);
 
     expect(summary?.recentTurns).toHaveLength(3);
-    expect(summary?.recentTurns[0].summary).toEqual({ prompt: "SUM:turn 0 prompt", response: "condensed" });
-    expect(summary?.recentTurns[1].summary).toEqual({ prompt: "SUM:turn 1 prompt", response: "condensed" });
-    expect(summary?.recentTurns[2].summary).toEqual({ prompt: "SUM:turn 2 prompt", response: "condensed" });
+    expect(summary?.recentTurns[0].summary).toEqual({ response: "condensed" });
+    expect(summary?.recentTurns[1].summary).toEqual({ response: "condensed" });
+    expect(summary?.recentTurns[2].summary).toEqual({ response: "condensed" });
     expect(summarizeTurn).toHaveBeenCalledTimes(3);
   });
 
   it("never calls the summarizer for a turn whose assistant hasn't replied yet", async () => {
-    const summarizeTurn = vi.fn(async () => ({ prompt: "should never happen", response: "should never happen" }));
+    const summarizeTurn = vi.fn(async () => ({ response: "should never happen" }));
     const summarizer: Pick<Summarizer, "summarizeTurn"> = { summarizeTurn };
 
     const lines = turnLines(0, 0, false); // prompt only, no assistant reply
@@ -1358,8 +1356,7 @@ describe("TranscriptIndexCache turn summaries", () => {
   });
 
   it("exposes the same 3-most-recent-only summary window on the flow view", async () => {
-    const summarizeTurn = vi.fn(async ({ prompt }: { prompt: string; response: string }) => ({
-      prompt: `SUM:${prompt}`,
+    const summarizeTurn = vi.fn(async (_input: { prompt: string; response: string }) => ({
       response: "condensed",
     }));
     const summarizer: Pick<Summarizer, "summarizeTurn"> = { summarizeTurn };
@@ -1373,9 +1370,9 @@ describe("TranscriptIndexCache turn summaries", () => {
 
     expect(flow?.turns).toHaveLength(4);
     expect(flow?.turns[0].summary).toBeNull();
-    expect(flow?.turns[1].summary).toEqual({ prompt: "SUM:turn 1 prompt", response: "condensed" });
-    expect(flow?.turns[2].summary).toEqual({ prompt: "SUM:turn 2 prompt", response: "condensed" });
-    expect(flow?.turns[3].summary).toEqual({ prompt: "SUM:turn 3 prompt", response: "condensed" });
+    expect(flow?.turns[1].summary).toEqual({ response: "condensed" });
+    expect(flow?.turns[2].summary).toEqual({ response: "condensed" });
+    expect(flow?.turns[3].summary).toEqual({ response: "condensed" });
   });
 
   it("defaults to a null summary on every turn when no summarizer is configured", async () => {
