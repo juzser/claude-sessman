@@ -177,4 +177,32 @@ describe("startServer ollama lifecycle shutdown", () => {
 
     expect(stop).toHaveBeenCalledTimes(1);
   });
+
+  it("never starts the ollama lifecycle when the summarizer is null, which is the default", async () => {
+    const config: AppConfig = {
+      sessionsDir,
+      projectsDir,
+      host: "127.0.0.1",
+      port: 0,
+      summarizer: {
+        kind: "null",
+        model: "fixture-model",
+        url: "http://127.0.0.1:1",
+        cacheDir: path.join(tmpdir(), "sessman-server-cache-fixture"),
+      },
+    };
+
+    const fakeStartOllamaLifecycle = vi.fn(() =>
+      Promise.reject(new Error("lifecycle must not be started on the null summarizer")),
+    );
+
+    const running = startServer(config, { startOllamaLifecycle: fakeStartOllamaLifecycle });
+    await new Promise<void>((resolve) => running.httpServer.once("listening", resolve));
+    await running.close();
+
+    // The point of the opt-in default: on a stock install nothing probes
+    // 127.0.0.1:11434 and nothing spawns `ollama serve`, so the operator pays
+    // no memory or CPU for a summarizer they did not ask for.
+    expect(fakeStartOllamaLifecycle).not.toHaveBeenCalled();
+  });
 });

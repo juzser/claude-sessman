@@ -371,17 +371,18 @@ flagged.
 response: string }`, `server/src/summarizer.ts`) — a short LLM-generated
 ask/did pair for one turn. Which backend produces it is selected by
 `config.summarizer.kind` (`server/src/config.ts`, wired in
-`server/src/server.ts`'s `startServer`): `"ollama"` (default) uses
-`OllamaSummarizer` (`server/src/ollama-client.ts`), a thin HTTP client over
-`POST /api/generate` against the configured Ollama URL; `"null"` uses
-`NullSummarizer`, which always resolves `null`. `OllamaSummarizer` itself
+`server/src/server.ts`'s `startServer`): `"null"` (the default) uses
+`NullSummarizer`, which always resolves `null` and never spawns or contacts
+anything; `"ollama"` opts in to `OllamaSummarizer`
+(`server/src/ollama-client.ts`), a thin HTTP client over `POST /api/generate`
+against the configured Ollama URL. `OllamaSummarizer` itself
 never throws either — any network failure, non-2xx response, timeout, or
 unparseable reply resolves `null` the same as `NullSummarizer` would. Four
 env vars configure this (`config.ts`'s `loadConfig`):
 
 | Env var | Default | Purpose |
 |---|---|---|
-| `SESSMAN_SUMMARIZER` | `ollama` | `"ollama"` or `"null"`; `"null"` forces zero Ollama calls |
+| `SESSMAN_SUMMARIZER` | `null` | `"ollama"` opts in; every other value, unset included, forces zero Ollama calls |
 | `SESSMAN_OLLAMA_MODEL` | `qwen2.5:3b` | model name sent to Ollama's `/api/generate` |
 | `SESSMAN_OLLAMA_URL` | `http://127.0.0.1:11434` | Ollama base URL — **the only network destination this codebase ever calls, and it is loopback-only** |
 | `SESSMAN_CACHE_DIR` | `~/.cache/claude-sessman` | on-disk summary cache root — **deliberately never under `~/.claude`** |
@@ -419,9 +420,12 @@ Behavioral rules that apply regardless of which `Summarizer` is selected:
   unreachable; its `stop()` only ever kills a child it spawned itself, and
   is a no-op if it found an already-running Ollama (or if the `ollama`
   binary was missing entirely).
-- With `SESSMAN_SUMMARIZER=null`, or `"ollama"` selected but Ollama
-  unreachable/binary missing, every `summary` is permanently `null` — this
-  field is always optional to a consumer, never a value to depend on being
+- **A `null` summary is the default case, not the exception.** Summarization
+  is opt-in (`SESSMAN_SUMMARIZER=ollama`), so on a default install every
+  `summary` is permanently `null` and consumers render the real
+  `prompt`/`gist` text instead. The same holds when Ollama *was* opted into
+  but is unreachable or its binary is missing. Treat `summary` as an
+  enrichment that is usually absent, never a value to depend on being
   present.
 
 Text captured for `prompt`/`gist` collapses whitespace and is capped at

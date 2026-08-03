@@ -132,7 +132,11 @@ every implementation must degrade to on any failure — never throw.
 `ollama-client.ts`'s `OllamaSummarizer` is the real backend: a thin HTTP
 client over Ollama's `POST /api/generate` that likewise always resolves
 `null` instead of throwing (network failure, non-2xx, timeout, or an
-unparseable reply). **`http://127.0.0.1:11434` (loopback-only) is the sole
+unparseable reply). **It is opt-in.** A default install runs
+`NullSummarizer`, shows the real prompt/response text, and never spawns an
+Ollama server, because keeping one resident costs memory and CPU for the
+entire time sessman is up and the plain-text fallback is good enough to not
+charge every operator for that by default. **`http://127.0.0.1:11434` (loopback-only) is the sole
 network destination this codebase is ever allowed to call** — no other
 host, and this tool never binds or calls out to anything but loopback.
 
@@ -141,14 +145,16 @@ there for exact defaults), select and configure the summarizer:
 
 | Env var | Purpose |
 |---|---|
-| `SESSMAN_SUMMARIZER` | `"ollama"` (default) or `"null"` — forces `NullSummarizer` with zero Ollama calls |
+| `SESSMAN_SUMMARIZER` | `"ollama"` opts in to summarization; anything else, including unset (the default), gets `NullSummarizer` with zero Ollama calls and no process spawned |
 | `SESSMAN_OLLAMA_MODEL` | model name passed to Ollama's `/api/generate` (default `qwen2.5:3b`) |
 | `SESSMAN_OLLAMA_URL` | Ollama base URL (default `http://127.0.0.1:11434`) |
 | `SESSMAN_CACHE_DIR` | on-disk summary cache root, deliberately outside `~/.claude` (default `~/.cache/claude-sessman`) |
 
 `ollama-lifecycle.ts`'s `startOllamaLifecycle` runs once at server startup
-(`server.ts`'s `startServer`) fire-and-forget — never awaited *during
-startup*, so a slow or missing Ollama can never delay the HTTP/WS server
+(`server.ts`'s `startServer`), and only when `SESSMAN_SUMMARIZER=ollama`
+selected the Ollama path — on the default `"null"` config it is never called
+at all, so no probe and no spawn ever happen. When it does run it is
+fire-and-forget — never awaited *during startup*, so a slow or missing Ollama can never delay the HTTP/WS server
 coming up. The promise it returns is retained and awaited inside `close()`,
 which is what stops a shutdown racing the spawn from orphaning a
 self-spawned `ollama serve`; do not "simplify" that back into reading a

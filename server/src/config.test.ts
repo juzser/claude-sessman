@@ -25,22 +25,32 @@ describe("loadConfig", () => {
     expect(config.port).toBe(9999);
   });
 
-  it("defaults summarizer to ollama/qwen2.5:3b/127.0.0.1:11434 and a ~/.cache cache dir", () => {
+  it("defaults summarizer to null so nothing spawns Ollama unasked", () => {
     const config = loadConfig({});
-    expect(config.summarizer.kind).toBe("ollama");
+    expect(config.summarizer.kind).toBe("null");
     expect(config.summarizer.model).toBe("qwen2.5:3b");
     expect(config.summarizer.url).toBe("http://127.0.0.1:11434");
     expect(config.summarizer.cacheDir).toBe(path.join(os.homedir(), ".cache", "claude-sessman"));
   });
 
+  it("opts in to Ollama only on the exact value \"ollama\"", () => {
+    expect(loadConfig({ SESSMAN_SUMMARIZER: "ollama" }).summarizer.kind).toBe("ollama");
+  });
+
+  it("falls back to null for an unrecognised SESSMAN_SUMMARIZER rather than guessing", () => {
+    expect(loadConfig({ SESSMAN_SUMMARIZER: "Ollama" }).summarizer.kind).toBe("null");
+    expect(loadConfig({ SESSMAN_SUMMARIZER: "" }).summarizer.kind).toBe("null");
+    expect(loadConfig({ SESSMAN_SUMMARIZER: "yes" }).summarizer.kind).toBe("null");
+  });
+
   it("honours SESSMAN_SUMMARIZER / SESSMAN_OLLAMA_MODEL / SESSMAN_OLLAMA_URL / SESSMAN_CACHE_DIR overrides", () => {
     const config = loadConfig({
-      SESSMAN_SUMMARIZER: "null",
+      SESSMAN_SUMMARIZER: "ollama",
       SESSMAN_OLLAMA_MODEL: "fixture-model",
       SESSMAN_OLLAMA_URL: "http://127.0.0.1:1234",
       SESSMAN_CACHE_DIR: "/tmp/fixture-cache",
     });
-    expect(config.summarizer.kind).toBe("null");
+    expect(config.summarizer.kind).toBe("ollama");
     expect(config.summarizer.model).toBe("fixture-model");
     expect(config.summarizer.url).toBe("http://127.0.0.1:1234");
     expect(config.summarizer.cacheDir).toBe("/tmp/fixture-cache");

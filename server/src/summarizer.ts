@@ -22,10 +22,11 @@ export interface Summarizer {
 }
 
 /**
- * Graceful-degradation summarizer used when Ollama is absent/disabled
- * (`SESSMAN_SUMMARIZER=null`, or the lifecycle probe fails to find/spawn the
- * `ollama` binary). Always resolves `null`, letting callers fall back to
- * truncated real prompt/response text.
+ * Graceful-degradation summarizer, and the default: summarization is opt-in
+ * via `SESSMAN_SUMMARIZER=ollama`, so this is what runs unless the operator
+ * asks for Ollama. Also what runs when Ollama was asked for but the lifecycle
+ * probe fails to find/spawn the `ollama` binary. Always resolves `null`,
+ * letting callers fall back to truncated real prompt/response text.
  */
 export class NullSummarizer implements Summarizer {
   async summarizeTurn(_input: { prompt: string; response: string }): Promise<TurnSummary | null> {
