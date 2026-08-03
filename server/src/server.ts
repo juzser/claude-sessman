@@ -42,7 +42,7 @@ export function startServer(config: AppConfig, deps: StartServerDeps = {}): Runn
   const startLifecycle = deps.startOllamaLifecycle ?? startOllamaLifecycle;
   const gitCache = new GitInfoCache();
 
-  const summarizer: Pick<Summarizer, "summarizeTurn"> =
+  const summarizer: Pick<Summarizer, "summarizeTurn" | "summarizeSession"> =
     config.summarizer.kind === "ollama"
       ? new OllamaSummarizer({ model: config.summarizer.model, url: config.summarizer.url })
       : new NullSummarizer();
