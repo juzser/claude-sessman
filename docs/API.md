@@ -241,3 +241,12 @@ carries `continuation: boolean` — `true` for a turn whose prompt is the
 auto-generated post-compaction preamble. These turns are flagged, not
 dropped, so `index` stays transcript-global and monotonic (see
 `docs/DATA-CONTRACT.md`).
+
+`transcriptSummary` also carries `sessionSummary: { description: string } |
+null` — one line describing what the session is currently about, built from
+recent prompts only. It is `null` on a default install (summarization is
+opt-in via `SESSMAN_SUMMARIZER=ollama`) and on any summarizer failure, so
+treat it as an enrichment that is usually absent. It rides on
+`TranscriptSummary`, so it reaches this endpoint and `/detail`, but there is
+no equivalent field on `FlowSummary`. Full semantics in
+`docs/DATA-CONTRACT.md`.

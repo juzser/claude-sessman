@@ -42,6 +42,11 @@ export interface TurnSummary {
   response: string;
 }
 
+/** Mirrors server/src/summarizer.ts SessionSummary. */
+export interface SessionSummary {
+  description: string;
+}
+
 /** Mirrors server/src/transcript-index.ts TranscriptTurn. */
 export interface TranscriptTurn {
   /** Position of this turn across the whole transcript (not reset by the ring buffer). */
@@ -72,6 +77,8 @@ export interface TranscriptSummary {
   scannedBytes: number;
   complete: boolean;
   recentTurns: TranscriptTurn[];
+  /** Null unless a summarizer is opted in and has succeeded at least once; see server's transcript-index docs. */
+  sessionSummary: SessionSummary | null;
 }
 
 /** Mirrors server/src/transcript-index.ts FlowSummary — the /flow endpoint's payload. */
