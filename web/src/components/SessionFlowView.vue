@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { computed, ref } from "vue";
-import { VueFlow } from "@vue-flow/core";
+import { computed, ref, watch } from "vue";
+import { VueFlow, type VueFlowStore } from "@vue-flow/core";
 import { Button } from "@/components/ui/button";
 import { Lozenge } from "@/components/ui/lozenge";
 import { buildFlowGraph } from "../lib/flow-model";
@@ -11,11 +11,17 @@ const props = defineProps<{
   state: "loading" | "loaded" | "error";
   flow: FlowSummary | null;
   errorMessage: string;
+  /**
+   * Transcript-wide index of the turn the operator arrived on. The graph pans
+   * to it instead of making them hunt for it in a lane hundreds of turns long.
+   */
+  focusTurnIndex?: number | null;
 }>();
 
 const emit = defineEmits<{ retry: [] }>();
 
 const PROMPT_LINE_LENGTH = 140;
+const FOCUS_PAN_MS = 300;
 
 // Vue Flow measures each custom node's real DOM size itself; we only ever
 // supply id/position/data, keyed by the turn's transcript-wide index so the
@@ -46,6 +52,32 @@ function toolChipLabel(turn: TranscriptTurn): string {
   if (count === 0) return "no tool calls";
   return count === 1 ? "1 tool call" : `${count} tool calls`;
 }
+
+// Vue Flow hands its store over once the pane exists; there is nothing to pan
+// before that, and the graph may still be loading when focusTurnIndex arrives.
+const pane = ref<VueFlowStore | null>(null);
+
+function panToFocusedTurn(): void {
+  const store = pane.value;
+  const turnIndex = props.focusTurnIndex;
+  if (!store || turnIndex === null || turnIndex === undefined) return;
+
+  const node = store.findNode(String(turnIndex));
+  if (!node) return;
+
+  // Node dimensions are measured, so centre on the node's middle rather than
+  // its top-left corner, which would park it against the pane's edge.
+  const x = node.position.x + (node.dimensions?.width ?? 0) / 2;
+  const y = node.position.y + (node.dimensions?.height ?? 0) / 2;
+  void store.setCenter(x, y, { zoom: 1, duration: FOCUS_PAN_MS });
+}
+
+function onPaneReady(store: VueFlowStore): void {
+  pane.value = store;
+  panToFocusedTurn();
+}
+
+watch(() => [props.focusTurnIndex, props.flow], panToFocusedTurn);
 
 function retry(): void {
   emit("retry");
@@ -84,6 +116,7 @@ function retry(): void {
         :fit-view-on-init="true"
         :min-zoom="0.2"
         class="h-full w-full"
+        @pane-ready="onPaneReady"
       >
         <template #node-default="{ data }">
           <div
