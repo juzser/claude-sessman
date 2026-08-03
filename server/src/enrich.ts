@@ -44,7 +44,14 @@ export async function enrichSession(
     uptimeSec,
     lastActivityAgoSec,
     ...transcriptInfo,
-    transcriptSummary: options.transcriptIndexCache.getSummary(raw.sessionId, transcriptInfo.transcriptPath),
+    // Only alive sessions drive the transcript index. A dead session is
+    // re-enriched every poll tick forever (the registry has no pruning), so
+    // if this stayed unconditional it would flood TranscriptIndexCache's LRU
+    // cap and evict genuinely live sessions that are actually being viewed —
+    // see docs/ARCHITECTURE.md's "Retention bound" section.
+    transcriptSummary: alive
+      ? options.transcriptIndexCache.getSummary(raw.sessionId, transcriptInfo.transcriptPath)
+      : null,
     git: options.gitCache.getGitInfo(raw.cwd),
   };
 }
