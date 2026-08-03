@@ -3,6 +3,7 @@ import { computed, ref, watch } from "vue";
 import { VueFlow, type VueFlowStore } from "@vue-flow/core";
 import { Button } from "@/components/ui/button";
 import { Lozenge } from "@/components/ui/lozenge";
+import { Skeleton } from "@/components/ui/skeleton";
 import { buildFlowGraph } from "../lib/flow-model";
 import { formatTurnTime, truncateLine } from "../lib/transcript-format";
 import type { FlowSummary, TranscriptTurn } from "../lib/types";
@@ -22,6 +23,8 @@ const emit = defineEmits<{ retry: [] }>();
 
 const PROMPT_LINE_LENGTH = 140;
 const FOCUS_PAN_MS = 300;
+/** Node-shaped placeholders held while the flow loads. */
+const SKELETON_NODE_COUNT = 3;
 
 // Vue Flow measures each custom node's real DOM size itself; we only ever
 // supply id/position/data, keyed by the turn's transcript-wide index so the
@@ -86,7 +89,16 @@ function retry(): void {
 
 <template>
   <div>
-    <p v-if="state === 'loading'" class="text-sm text-fg-subtle">Loading flow…</p>
+    <!-- Same pane, same node footprint: the flow arrives into the shape the
+         operator is already looking at instead of replacing a line of text. -->
+    <div
+      v-if="state === 'loading'"
+      data-slot="flow-skeleton"
+      class="flex h-112 w-full flex-col items-center gap-4 overflow-hidden rounded-lg border border-line bg-surface-sunken/40 p-4"
+      aria-hidden="true"
+    >
+      <Skeleton v-for="n in SKELETON_NODE_COUNT" :key="n" class="h-24 w-72 shrink-0 rounded-lg" />
+    </div>
 
     <div v-else-if="state === 'error'" class="flex flex-col items-start gap-2">
       <p class="text-sm text-danger">{{ errorMessage }}</p>
@@ -120,6 +132,7 @@ function retry(): void {
       >
         <template #node-default="{ data }">
           <div
+            data-slot="flow-node"
             class="w-72 cursor-pointer rounded-lg border border-line bg-surface-raised p-2.5 text-xs shadow-lg"
             :class="{ 'z-20': isExpanded(data.turn) }"
             @click="toggleExpanded(data.turn.index)"
@@ -128,33 +141,53 @@ function retry(): void {
               <span>turn #{{ data.turn.index + 1 }}</span>
               <span>{{ formatTurnTime(data.turn.at) }}</span>
             </div>
-            <p class="text-fg" :title="data.turn.prompt.text">
-              <span class="text-fg-subtlest">prompt:</span>
-              {{ truncateLine(data.turn.prompt.text || "(no text)", PROMPT_LINE_LENGTH) }}
-            </p>
-            <p v-if="data.turn.gist.text" class="mt-1 text-fg-subtle" :title="data.turn.gist.text">
-              <span class="text-fg-subtlest">reply:</span> {{ truncateLine(data.turn.gist.text, PROMPT_LINE_LENGTH) }}
-            </p>
+            <!-- Collapsed, one line each: at this node's width a preview is all
+                 that fits, and the whole text is one click away below. -->
+            <template v-if="!isExpanded(data.turn)">
+              <p class="text-fg" :title="data.turn.prompt.text">
+                <span class="text-fg-subtlest">prompt:</span>
+                {{ truncateLine(data.turn.prompt.text || "(no text)", PROMPT_LINE_LENGTH) }}
+              </p>
+              <p v-if="data.turn.gist.text" class="mt-1 text-fg-subtle" :title="data.turn.gist.text">
+                <span class="text-fg-subtlest">reply:</span> {{ truncateLine(data.turn.gist.text, PROMPT_LINE_LENGTH) }}
+              </p>
+            </template>
+
             <p class="mt-1.5 text-fg-subtle">{{ toolChipLabel(data.turn) }}</p>
 
-            <div v-if="isExpanded(data.turn)" class="mt-2 max-h-40 overflow-y-auto border-t border-line pt-2">
-              <ul v-if="data.turn.toolCalls.length > 0" class="flex flex-col gap-1">
+            <!-- Expanded: what the operator actually wrote, in full and never
+                 summarized. The region scrolls so a long turn cannot stretch
+                 the node past the pane. -->
+            <div v-if="isExpanded(data.turn)" class="mt-2 max-h-64 overflow-y-auto border-t border-line pt-2">
+              <p data-slot="turn-prompt" class="wrap-anywhere whitespace-pre-wrap text-fg">
+                <span class="text-fg-subtlest">prompt:</span>
+                {{ data.turn.prompt.text || "(no text)" }}
+              </p>
+              <p
+                v-if="data.turn.gist.text"
+                data-slot="turn-reply"
+                class="mt-1.5 wrap-anywhere whitespace-pre-wrap text-fg-subtle"
+              >
+                <span class="text-fg-subtlest">reply:</span> {{ data.turn.gist.text }}
+              </p>
+
+              <ul v-if="data.turn.toolCalls.length > 0" class="mt-1.5 flex flex-col gap-1">
                 <li
                   v-for="(call, i) in data.turn.toolCalls"
                   :key="i"
-                  class="rounded-sm border border-line px-1.5 py-0.5 text-[11px] text-fg-subtle"
+                  class="rounded-sm border border-line px-1.5 py-0.5 text-caption text-fg-subtle"
                 >
                   {{ call.name }}<span v-if="call.target"> — {{ call.target }}</span>
                 </li>
               </ul>
-              <p v-if="data.turn.toolCallsOmitted > 0" class="mt-1 text-[11px] text-fg-subtlest">
+              <p v-if="data.turn.toolCallsOmitted > 0" class="mt-1 text-caption text-fg-subtlest">
                 +{{ data.turn.toolCallsOmitted }} more
               </p>
               <div v-if="data.turn.filesTouched.length > 0" class="mt-1.5 flex flex-wrap gap-1">
                 <span
                   v-for="file in data.turn.filesTouched"
                   :key="file"
-                  class="rounded-full border border-line px-1.5 py-0.5 text-[11px] text-fg-subtle"
+                  class="rounded-full border border-line px-1.5 py-0.5 text-caption text-fg-subtle"
                 >
                   {{ file }}
                 </span>
