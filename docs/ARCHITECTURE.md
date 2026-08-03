@@ -86,6 +86,19 @@ synchronous reads that happen to also (sometimes) trigger async work on the
 side. A slow/hung `git` process or a multi-MB transcript scan can delay
 *that key's next refresh*, never the current `/api/sessions` response.
 
+**Retention bound.** `TranscriptIndexCache` additionally caps the number of
+sessions it retains at `MAX_CACHED_SESSIONS` (50), evicting the
+least-recently-*accessed* entry (not least-recently-written) once over the
+cap, via a private `store()` helper that every cache write funnels through.
+An entry with a refresh still in flight (`pending` non-null) is never
+evicted — the cache is allowed to transiently exceed the cap rather than
+drop an awaited refresh. Evicting a session's `IndexState` also drops that
+session's `subagentIndex` and its per-agent `assistantMessageDedup` maps
+with it, since they live inside the evicted `IndexState`; this is why
+capping the outer cache is sufficient and no second eviction policy was
+added for those inner maps. `GitInfoCache` has no such cap — it's smaller
+per entry and out of scope for this change.
+
 ## Caching contract: incremental transcript scan
 
 `transcript-index.ts`'s scan of a `.jsonl` transcript is the most

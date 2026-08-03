@@ -213,30 +213,30 @@ with the earlier ones' state already committed. Scoping the map to one parse
 run would silently restore the per-line double count.
 
 Bounding it, honestly: that "thousand entries" figure is per transcript, and
-`TranscriptIndexCache` holds one `IndexState` per `sessionId` it has ever been
-asked about — including dead sessions, since callers pass `includeDead: true`
-— and never evicts an entry. So the real ceiling is a thousand entries times
-however many sessions the process has seen since it started, not a thousand
-overall. Every other field on `IndexState` is either O(1) or explicitly capped
-(`recentTurns` by `MAX_FLOW_TURNS`, `pendingSubagents` by
-`MAX_RUNNING_SUBAGENTS`); this is the first that grows with transcript length,
-so it makes the missing session-level eviction matter in a way it did not
-before. The session cache's unbounded growth is pre-existing and out of scope
-here; capping it (the `MAX_RUNNING_SUBAGENTS` eviction is a usable template)
-is the fix, not capping this map.
+`TranscriptIndexCache` holds one `IndexState` per `sessionId` it has been
+asked about recently — including dead sessions, since callers pass
+`includeDead: true`. Unlike `recentTurns` (`MAX_FLOW_TURNS`) and
+`pendingSubagents` (`MAX_RUNNING_SUBAGENTS`), this map has no cap of its
+own; instead `TranscriptIndexCache` itself is capped at
+`MAX_CACHED_SESSIONS` (50) sessions, least-recently-accessed evicted first
+(see `docs/ARCHITECTURE.md`'s "Retention bound" note). Evicting a session
+drops its whole `IndexState` — this map included — so the real ceiling is a
+thousand entries times at most `MAX_CACHED_SESSIONS` sessions, not however
+many sessions the process has seen since it started.
 
 `IndexState.subagentIndex` (`SubagentIndexState.agents`, a
 `Map<agentId, AgentFileState>`) is the same shape of problem for the same
 reason: each `AgentFileState` carries its own `messageDedup` map, deduping
 that one subagent's assistant messages by `message.id` exactly like
 `assistantMessageDedup` does for the main transcript, and nothing ever
-removes an entry for an agent that has finished. It's unbounded for the same
-process-lifetime reason and gets the same non-fix here. In practice it's
-much smaller than `assistantMessageDedup` — a session dispatches dozens of
-subagents at most, not the thousands of messages a single long transcript
-can carry — so it's a real instance of the same gap rather than an equally
-pressing one; it belongs in the same eviction fix as the cache itself, not a
-separate one.
+removes an entry for an agent that has finished. It gets no cap of its own
+either, for the same reason `assistantMessageDedup` doesn't: evicting the
+session's `IndexState` from `TranscriptIndexCache` drops this map with it,
+so bounding the outer cache transitively bounds this one too. In practice
+it's much smaller than `assistantMessageDedup` — a session dispatches dozens
+of subagents at most, not the thousands of messages a single long
+transcript can carry — so it was never the pressing instance of this gap,
+but it's covered by the same fix regardless.
 
 `SummedUsage` intentionally has **no `contextTokens` field**, unlike
 `TokenUsage`. `contextTokens` is `input + cacheRead + cacheCreation` *of one
