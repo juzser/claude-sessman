@@ -108,7 +108,7 @@ function retry(): void {
     <p v-else-if="isEmpty" class="text-sm text-fg-subtlest">No turns recorded yet.</p>
 
     <p v-else-if="state === 'loaded' && !flow" class="text-sm text-fg-subtlest">
-      This session's transcript hasn't been indexed yet — check back in a moment.
+      This session's transcript hasn't been indexed yet. Check back in a moment.
     </p>
 
     <div
@@ -177,7 +177,7 @@ function retry(): void {
                   :key="i"
                   class="rounded-sm border border-line px-1.5 py-0.5 text-caption text-fg-subtle"
                 >
-                  {{ call.name }}<span v-if="call.target"> — {{ call.target }}</span>
+                  {{ call.name }}<span v-if="call.target">: {{ call.target }}</span>
                 </li>
               </ul>
               <p v-if="data.turn.toolCallsOmitted > 0" class="mt-1 text-caption text-fg-subtlest">

@@ -6,7 +6,7 @@ import { useAggregateUsage } from "../composables/useAggregateUsage";
 import type { EnrichedSession } from "../lib/types";
 
 const props = defineProps<{
-  /** The same list the main column renders — folded here, never re-fetched. */
+  /** The same list the main column renders, folded here and never re-fetched. */
   sessions: EnrichedSession[];
 }>();
 

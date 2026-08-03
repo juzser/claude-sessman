@@ -56,7 +56,7 @@ const sessionCountLabel = computed(() =>
 
 /**
  * Resolved against the live list rather than captured on click, so the open
- * sheet keeps up with socket frames — and closes itself when its session ends.
+ * sheet keeps up with socket frames, and closes itself when its session ends.
  */
 const expandedSession = computed(
   () => sessions.value.find((session) => session.sessionId === expandedSessionId.value) ?? null,

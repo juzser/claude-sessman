@@ -6,7 +6,7 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/comp
 import type { TranscriptTurn } from "../lib/types";
 
 defineProps<{
-  /** Most recent turns, oldest first — rendered in the order given. */
+  /** Most recent turns, oldest first; rendered in the order given. */
   turns: TranscriptTurn[];
 }>();
 
@@ -17,7 +17,7 @@ const emit = defineEmits<{ expand: [turnIndex: number] }>();
 
 /**
  * The reply slot takes the LLM summary when one exists and the raw captured
- * gist otherwise. Same slot, same classes either way — a summarized turn must
+ * gist otherwise. Same slot, same classes either way, so a summarized turn must
  * not be visually distinguishable from a raw one.
  */
 function replyText(turn: TranscriptTurn): string {

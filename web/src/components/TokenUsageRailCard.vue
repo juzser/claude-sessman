@@ -8,7 +8,7 @@ import type { ModelUsage, SummedUsage } from "../lib/types";
 defineProps<{
   /** Field-wise total across every indexed session; null while none is. */
   total: SummedUsage | null;
-  /** Already merged and sorted by the caller — rendered in the order given. */
+  /** Already merged and sorted by the caller; rendered in the order given. */
   byModel: ModelUsage[];
 }>();
 </script>
@@ -20,7 +20,7 @@ defineProps<{
     </CardHeader>
     <CardContent class="flex flex-col gap-3">
       <!-- null means "nothing indexed yet", zero means "indexed, and it really
-           is zero" — the rail has to keep those apart, so only the null case
+           is zero". The rail has to keep those apart, so only the null case
            collapses to the empty line. -->
       <p v-if="total === null" class="text-sm text-fg-subtle">No usage yet.</p>
       <div v-else class="flex flex-col gap-1">

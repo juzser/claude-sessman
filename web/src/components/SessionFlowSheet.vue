@@ -9,9 +9,10 @@ import type { EnrichedSession, FlowSummary } from "../lib/types";
 import SessionFlowView from "./SessionFlowView.vue";
 
 /**
- * "Unexpected server response (503)." is true but tells the operator nothing he
- * can act on, so an unclassified failure gets copy instead. A vanished session
- * and an unreachable server each say something specific — those are kept.
+ * "Unexpected server response (503)." is true but tells the operator nothing
+ * they can act on, so an unclassified failure gets copy instead. A vanished
+ * session and an unreachable server each say something specific, so those are
+ * kept.
  */
 const GENERIC_FLOW_FAILURE = "We couldn't load this session's flow.";
 

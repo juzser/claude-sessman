@@ -33,7 +33,7 @@ const path = computed(() => shortenPath(props.session.cwd, props.home));
 /**
  * Tone deliberately keeps today's colours (busy=amber, idle=emerald) rather
  * than the six-family remap: this is what the operator reads at a glance every
- * day, and only the wording changed. The tone lives on this Lozenge alone —
+ * day, and only the wording changed. The tone lives on this Lozenge alone;
  * the card surface below is identical for every status.
  */
 const STATUSES: Record<StatusVisual, { tone: LozengeVariants["tone"]; label: string }> = {

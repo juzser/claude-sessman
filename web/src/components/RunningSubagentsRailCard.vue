@@ -4,7 +4,7 @@ import { Row, RowList } from "@/components/ui/row-list";
 import type { RunningSubagentRow } from "../composables/useAggregateUsage";
 
 defineProps<{
-  /** Already sorted by the caller — rendered in the order given. */
+  /** Already sorted by the caller; rendered in the order given. */
   running: RunningSubagentRow[];
 }>();
 

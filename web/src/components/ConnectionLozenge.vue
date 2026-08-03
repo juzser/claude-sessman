@@ -6,7 +6,7 @@ import type { ConnectionState } from "../lib/ws-client";
 const props = defineProps<{ state: ConnectionState }>();
 
 /**
- * One always-rendered indicator for all four socket states — it replaces the
+ * One always-rendered indicator for all four socket states. It replaces the
  * old derived "should I show a banner?" boolean, which conflated `reconnecting`
  * (degraded, still trying) with `closed` (our own deliberate teardown).
  *
