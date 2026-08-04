@@ -520,42 +520,44 @@ Beyond what's already documented in the repo's own `CLAUDE.md`
     ```
     From a 17-finding baseline. The `identicon.ts` glyph set that contributed 4
     of them is gone: avatars are monogram-on-gradient now, no pictographs.
-  - **Hardcode lint: 9 findings, every one inside a vendored file.**
+  - **Hardcode lint: 1 finding, inside a vendored file.**
     ```
     $ python3 scripts/design/lint_hardcodes.py web/src
     web/src/components/ui/tooltip/TooltipContent.vue:47: hardcoded px '2px' — use a token
-    web/src/styles/hds-tokens.css:4: hardcoded hex '#2563eb' — use a token
-    web/src/styles/hds-tokens.css:4: hardcoded hex '#3b82f6' — use a token
-    web/src/styles/hds-tokens.css:92: hardcoded hex '#2563eb' — use a token
-    web/src/styles/hds-tokens.css:227: hardcoded px '2px' — use a token
-    web/src/styles/hds-tokens.css:227: hardcoded px '4px' — use a token
-    web/src/styles/hds-tokens.css:227: hardcoded px '2px' — use a token
-    web/src/styles/hds-tokens.css:517: hardcoded px '2px' — use a token
-    web/src/styles/hds-tokens.css:521: hardcoded px '2px' — use a token
 
-    Scanned 74 file(s). Skipped 24 test file(s) — pass --include-tests to lint them.
-    FAIL: 9 hardcoded value(s). Map each to a token, or add a 'ds-allow-hardcode' comment for a justified exception.
+    Scanned 73 file(s). Skipped 24 test file(s) — pass --include-tests to lint them. Skipped 1 token-definition file(s) — raw values belong there.
+    FAIL: 1 hardcoded value(s). Map each to a token, or add a 'ds-allow-hardcode' comment for a justified exception.
     ```
-    **Zero are in app code.** Eight are in `hds-tokens.css`, the byte-identical
-    vendor copy, which this repo must never edit locally (see "Declarations");
-    the ninth is `rounded-[2px]` on shadcn-vue's stock tooltip arrow. The
-    standing decision is not to locally patch a copy-in file to satisfy a lint:
-    a local edit is silently reverted by the next re-copy from master, which is
-    strictly worse than a disclosed finding.
+    **Zero are in app code.** The one finding is `rounded-[2px]` on shadcn-vue's
+    stock tooltip arrow. The standing decision is not to locally patch a
+    copy-in file to satisfy a lint: a local edit is silently reverted by the
+    next re-copy from master, which is strictly worse than a disclosed finding.
 
-    Six of the eight `hds-tokens.css` findings are the linter misreading its
-    own input, and the three distinct blind spots are worth naming because each
-    is an upstream bug, not a token defect:
-    - **Hexes inside CSS comments are flagged.** Lines 4 and 92 are prose
-      explaining the dark-mode contrast rule; they mention `#3b82f6` and
-      `#2563eb` as *subjects*, and no rule sets a colour there.
-    - **`px` on the continuation line of a multi-line declaration is flagged.**
-      Line 227 is the middle of `--ds-shadow-overlay`. The token context test
-      only looks at the current line, so a declaration wrapped across lines
-      loses its `--ds-*` anchor after the first.
-    - **A hardcoded fallback inside `var(--token, <value>)` is *not* flagged** —
+    This was 9 findings until the gate scripts were re-synced from master. The
+    other eight were all in `hds-tokens.css` and were the linter misreading its
+    own input. Master had already fixed every one of the three blind spots this
+    section used to name; this repo's copies were simply nine days behind:
+    - **Hexes in CSS comments and `px` on a wrapped declaration's continuation
+      line.** Both were symptoms of one thing — `hds-tokens.css` being linted
+      as app code at all. Master's `TOKEN_NAME` now matches a hyphen before
+      `tokens.`, precisely so an adopter that prefixes its copy still has it
+      recognised as a token-definition file. It is skipped, and the skip is
+      printed rather than silent.
+    - **A hardcoded fallback inside `var(--token, <value>)` was not flagged** —
       the inverse failure, and the one that let the border-color shim sit
-      unflagged for days (see that entry above).
+      unflagged for days (see that entry above). Master replaced the
+      whole-line `TOKEN_CTX` whitelist with masking: `var(` keeps its opening
+      paren, so the fallback survives into the residue and is linted. Verified
+      against this repo's synced copy:
+      ```
+      $ printf 'a{border:1px solid var(--ds-line, #e5e7eb);color:var(--ds-fg)}\n' > /tmp/probe.css
+      $ python3 scripts/design/lint_hardcodes.py /tmp/probe.css
+      /tmp/probe.css:1: hardcoded hex '#e5e7eb' — use a token
+      ```
+
+    The lesson is not about any one bug: a copy-in gate script goes stale
+    silently, and a stale gate reports a number nobody can act on. Re-copy all
+    three scripts whenever master changes them.
 
     That leaves lines 517 and 521 as genuine raw `px` in the vendored base layer
     (`text-underline-offset: 2px`, `text-decoration-thickness: 2px`), which are

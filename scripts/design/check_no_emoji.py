@@ -11,7 +11,8 @@ emoji-free is what actually stops emoji in generated design systems.
 Usage:
   python3 scripts/check_no_emoji.py                      # examples/ + taste/ + agent files
   python3 scripts/check_no_emoji.py path/to/src ...
-Exit 0 = clean, 1 = an emoji/pictograph was found.
+Exit 0 = clean, 1 = an emoji/pictograph was found, 2 = the invocation was broken
+(a path that does not exist, or one that matched no file at all).
 """
 import re
 import sys
@@ -59,8 +60,22 @@ DASH = re.compile("[—–]")  # em-dash / en-dash — an AI-pattern tell in UI 
 
 def main(argv):
     paths = [Path(a) for a in argv] or DEFAULT
+    # A path that is neither a dir nor a file used to fall through iter_files
+    # silently and print "OK: no emoji" over zero files — a typo in a CI
+    # invocation read as a passing gate. A gate that read nothing has not
+    # passed anything.
+    missing = [p for p in paths if not p.exists()]
+    if missing:
+        for m in missing:
+            print(f"ERROR: no such path: {m}", file=sys.stderr)
+        return 2
     hits = []
     files = list(iter_files(paths))
+    if not files:
+        print(f"ERROR: matched 0 file(s) in "
+              f"{', '.join(str(p) for p in paths)} - nothing was scanned.",
+              file=sys.stderr)
+        return 2
     for f in files:
         try:
             text = f.read_text(encoding="utf-8")
