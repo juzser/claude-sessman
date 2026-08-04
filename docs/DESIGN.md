@@ -536,7 +536,9 @@ Beyond what's already documented in the repo's own `CLAUDE.md`
     This was 9 findings until the gate scripts were re-synced from master. The
     other eight were all in `hds-tokens.css` and were the linter misreading its
     own input. Master had already fixed every one of the three blind spots this
-    section used to name; this repo's copies were simply nine days behind:
+    section used to name. The copies here were taken on 2026-07-31 and the fix
+    landed upstream on 2026-08-03 — one day of lag was enough, which is the
+    whole point:
     - **Hexes in CSS comments and `px` on a wrapped declaration's continuation
       line.** Both were symptoms of one thing — `hds-tokens.css` being linted
       as app code at all. Master's `TOKEN_NAME` now matches a hyphen before
